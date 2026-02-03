@@ -4,7 +4,7 @@ from src.transport.avito_client import avito_client
 
 async def main():
     # Твоя ссылка
-    url = "212.193.26.118:8003/avito/webhook" 
+    url = "http://212.193.26.118:8003/avito/webhook" 
     
     print("\n1. Проверяем текущие подписки...")
     current = await avito_client.get_subscriptions()

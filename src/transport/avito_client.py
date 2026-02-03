@@ -38,8 +38,13 @@ class AvitoClient:
         token = await self.get_token()
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         payload = {"url": webhook_url}
+        
         async with httpx.AsyncClient() as client:
             resp = await client.post(f"{self.base_url}/messenger/v3/webhook", json=payload, headers=headers)
+            # Если не 200 OK, выводим текст ошибки
+            if resp.status_code not in [200, 201]:
+                print(f"Ошибка Авито ({resp.status_code}): {resp.text}")
+                return {"error": resp.text}
             return resp.json()
 
     async def send_message(self, chat_id: str, user_id: int, text: str):
