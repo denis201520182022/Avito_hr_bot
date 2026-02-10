@@ -32,14 +32,12 @@ services:
       - MAX_CLIENT_CONN=1000
       - DEFAULT_POOL_SIZE=20
       - LISTEN_PORT=6432
-      # ANY позволяет PgBouncer не проверять пароль самому, 
-      # а делегировать это реальному Postgres на хосте.
-      - AUTH_TYPE=any
-      # AsyncPG шлет много стартовых параметров, которые PgBouncer не понимает.
-      # Если их не игнорировать, будет ошибка протокола.
-      - IGNORE_STARTUP_PARAMETERS=extra_float_digits,client_encoding,timezone,application_name
+      # Используем именно этот тип, так как он работает в твоем окружении
+      - AUTH_TYPE=scram-sha-256
+      # Помогает избежать проблем с параметрами, которые шлет asyncpg
+      - IGNORE_STARTUP_PARAMETERS=extra_float_digits,client_encoding
     ports:
-      - "6432:6432"
+      - "6434:6432"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: always
