@@ -195,7 +195,7 @@ class InterviewFollowup(Base):
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     processed_at = Column(DateTime(timezone=True))
-    dialogue = relationship("Dialogue", back_populates="reminders")
+    dialogue = relationship("Dialogue", back_populates="followups")
 
 
 class AnalyticsEvent(Base):
