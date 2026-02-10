@@ -23,21 +23,21 @@ services:
     image: edoburu/pgbouncer
     container_name: avito_bot_pgbouncer
     environment:
-      # Как PgBouncer подключается к реальной базе на хосте
-      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@host.docker.internal:${DB_PORT}/${DB_NAME}
-      
-      # Настройки авторизации для самого PgBouncer (чтобы он пустил наше приложение)
-      - AUTH_TYPE=md5
       - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
-      
-      # Пул соединений
+      - DB_HOST=host.docker.internal
+      - DB_PORT=${DB_PORT}
+      - DB_NAME=${DB_NAME}
+      - POOL_MODE=transaction
       - MAX_CLIENT_CONN=1000
       - DEFAULT_POOL_SIZE=20
-      - POOL_MODE=transaction
-      - IGNORE_STARTUP_PARAMETERS=extra_float_digits
+      - LISTEN_PORT=6432
+      # Используем именно этот тип, так как он работает в твоем окружении
+      - AUTH_TYPE=scram-sha-256
+      # Помогает избежать проблем с параметрами, которые шлет asyncpg
+      - IGNORE_STARTUP_PARAMETERS=extra_float_digits,client_encoding
     ports:
-      - "6432:6432"
+      - "6434:6432"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: always
