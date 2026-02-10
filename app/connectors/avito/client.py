@@ -136,7 +136,7 @@ class AvitoClient:
             logger.info(f"    Headers: {headers}")
             # ---------------------------
 
-            msg_hook_res = await self.http_client.get(msg_check_url, headers=headers)
+            msg_hook_res = await self.http_client.post(msg_check_url, headers=headers)
             msg_hook_res.raise_for_status()
             msg_subs = msg_hook_res.json().get("subscriptions", [])
             
