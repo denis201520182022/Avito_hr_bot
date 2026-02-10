@@ -1,91 +1,65 @@
-from fastapi import FastAPI, Request, BackgroundTasks
-from src.ai_core.openai_client import ai_service
-from src.transport.avito_client import avito_client
+# main.py
 import logging
-import json
-import time
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, Header, Response
+from app.connectors.avito.client import avito
+from app.core.rabbitmq import mq
+from app.core.config import settings
 
-# Ставим уровень DEBUG для максимума инфы
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Настройка логов
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
-
-# Middleware для логирования ВСЕГО
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    start_time = time.time()
-    path = request.url.path
-    method = request.method
-    logger.info(f"🚀 ВХОДЯЩИЙ ЗАПРОС: {method} {path}")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- ДЕЙСТВИЯ ПРИ СТАРТЕ ---
+    logger.info("🚀 Запуск HR-бота...")
     
-    response = await call_next(request)
+    # 1. Подключаемся к RabbitMQ
+    await mq.connect()
     
-    process_time = time.time() - start_time
-    logger.info(f"✅ ОТВЕТ: {method} {path} Статус: {response.status_code} Время: {process_time:.4f}s")
-    return response
+    # 2. Авторизация и настройка вебхуков Авито
+    # Это гарантирует, что при каждом перезапуске бот проверяет свою "связь" с Авито
+    await avito.setup_webhooks()
+    
+    yield
+    
+    # --- ДЕЙСТВИЯ ПРИ ОСТАНОВКЕ ---
+    await mq.close()
+    logger.info("🛑 Бот остановлен")
 
-@app.get("/")
+app = FastAPI(title="AI HR Platform", lifespan=lifespan)
+
+@app.post("/webhooks/avito")
+async def avito_webhook_handler(
+    request: Request, 
+    x_secret: str = Header(None)
+):
+    """
+    Эндпоинт для приема вебхуков от Авито.
+    Обрабатывает и подтверждение, и входящие данные.
+    """
+    payload = await request.json()
+    
+    # 1. Проверка на пустое тело (запрос от Авито на проверку доступности эндпоинта)
+    if not payload:
+        return Response(status_code=200)
+
+    # 2. Логика безопасности (X-Secret)
+    import os
+    if x_secret != os.getenv("AVITO_WEBHOOK_SECRET"):
+        logger.warning("⚠️ Получен вебхук с неверным X-Secret")
+        # В режиме разработки можно закомментировать, в продакшне - обязательно
+
+    # 3. Отправляем сырое событие в RabbitMQ
+    # Мы не разбираем его здесь, это сделает Воркер
+    await mq.publish("avito_inbound", {
+        "source": "avito",
+        "payload": payload
+    })
+
+    return Response(status_code=200)
+
+@app.get("/health")
 async def health_check():
-    return {"status": "working", "time": time.time()}
-
-async def process_avito_message(data: dict):
-    try:
-        payload = data.get("payload", {})
-        msg_value = payload.get("value", {})
-        
-        chat_id = msg_value.get("chat_id")
-        my_user_id = msg_value.get("user_id")
-        author_id = msg_value.get("author_id")
-        text = msg_value.get("content", {}).get("text")
-
-        logger.info(f"📥 ОБРАБОТКА: chat={chat_id}, from={author_id}, text={text}")
-
-        if author_id == my_user_id:
-            logger.info("Self-message detected, skipping.")
-            return
-
-        if chat_id and text:
-            ai_response = await ai_service.generate_response(text)
-            logger.info(f"🤖 AI: {ai_response}")
-            
-            res = await avito_client.send_message(chat_id, my_user_id, ai_response)
-            logger.info(f"📤 ОТПРАВКА: {res}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка в process_avito_message: {e}", exc_info=True)
-
-@app.post("/avito/webhook")
-async def webhook(request: Request, background_tasks: BackgroundTasks):
-    try:
-        body = await request.body()
-        if not body:
-            logger.warning("Пустое тело запроса (возможно проверка Авито)")
-            return {"ok": True}
-            
-        raw_data = json.loads(body)
-        
-        # Печатаем вообще всё в консоль
-        print("\n" + "="*50)
-        print("FULL JSON FROM AVITO:")
-        print(json.dumps(raw_data, indent=2, ensure_ascii=False))
-        print("="*50 + "\n")
-        
-        # Авито V3 шлет сообщение внутри payload -> type
-        payload = raw_data.get("payload", {})
-        if payload.get("type") == "message":
-            background_tasks.add_task(process_avito_message, raw_data)
-        else:
-            logger.info(f"Получено событие типа: {payload.get('type')}")
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка парсинга вебхука: {e}")
-        
-    return {"ok": True}
-
-if __name__ == "__main__":
-    import uvicorn
-    # Слушаем на 0.0.0.0, чтобы тоннель точно видел
-    uvicorn.run(app, host="0.0.0.0", port=8003, log_level="debug")
+    return {"status": "ok", "bot_id": settings.bot_id}

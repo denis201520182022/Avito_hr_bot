@@ -1,6 +1,13 @@
 fastapi
 uvicorn
 httpx
-openai
-python-dotenv
+aio-pika
+sqlalchemy[asyncio]
+asyncpg
+pydantic
 pydantic-settings
+PyYAML
+openai
+alembic
+psycopg2-binary
+python-dotenv

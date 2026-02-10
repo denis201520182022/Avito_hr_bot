@@ -1,3 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
 .env
-/venv
+
+# DB & Migrations
+alembic.ini
+migrations/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+
 README.md

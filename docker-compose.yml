@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: avito_bot_rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: user
+      RABBITMQ_DEFAULT_PASS: password
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: avito_bot_redis
+    ports:
+      - "6379:6379"
+    restart: always
+
+  pgbouncer:
+    image: edoburu/pgbouncer
+    container_name: avito_bot_pgbouncer
+    environment:
+      # Параметры подключения к твоему Постгресу на хосте
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@host.docker.internal:${DB_PORT}/${DB_NAME}
+      - MAX_CLIENT_CONN=1000
+      - DEFAULT_POOL_SIZE=20
+      - POOL_MODE=transaction
+      - ADMIN_USERS=${DB_USER}
+      - AUTH_TYPE=any # Для разработки упрощаем, в проде подкрутим
+    ports:
+      - "6432:6432"
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # Магия для связи контейнера с хостом
+    restart: always
