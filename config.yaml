@@ -1,0 +1,67 @@
+bot_id: "avito_hr_ozerki_01"
+bot_role_name: "Сотрудник отдела подбора"
+
+channel:
+  type: "avito"
+  mode: "outbound"
+  vacancies:
+    - "Повар"
+    - "Горничная"
+    - "Кухонный работник"
+    - "Технический работник"
+
+llm:
+  provider: "openai"
+  model: "gpt-4o-mini"
+  smart_model: "gpt-4o"
+  temperature: 0.2
+
+knowledge_base:
+  vacancy_info_source: "platform"
+  main_prompt_url: "https://docs.google.com/document/d/..."
+  faq_url: "https://docs.google.com/document/d/..."
+  vacancy_doc_url: null
+
+screening:
+  questions:
+    - id: "full_name"
+      text: "Как я могу к Вам обращаться (ФИО)?"
+      required: true
+    - id: "age"
+      text: "Подскажите, сколько Вам полных лет?"
+      required: true
+    - id: "citizenship"
+      text: "Какое у Вас гражданство?"
+      required: true
+
+qualification_rules:
+  age:
+    min: 30
+    max: 55
+  citizenship:
+    any_allowed: true
+  criminal_record:
+    allowed_types: ["economic"]
+    forbidden_types: ["violence"]
+
+reminders:
+  silence:
+    - delay_minutes: 30
+      text: "Вы еще здесь? Подскажите, актуальна ли для Вас вакансия?"
+    - delay_minutes: 180
+      text: "Напишите, когда сможете продолжить."
+      stop_bot: true
+  interview:
+    evening_before:
+      text: "Напоминаю о завтрашнем собеседовании"
+      send_at_local_time: "19:00"
+
+integrations:
+  telegram:
+    enabled: true
+  google_sheets:
+    candidate_db_url: "https://..."
+    calendar_url: "https://..."
+
+system_messages:
+  rejection: "Спасибо! Мы свяжемся с Вами, если Ваша кандидатура нам подойдет."
