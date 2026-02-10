@@ -2,11 +2,14 @@
 import logging
 import httpx
 import datetime
+import os
 from typing import Optional
 from sqlalchemy import select
 from app.db.session import AsyncSessionLocal
 from app.db.models import Account
 from app.core.config import settings
+# ИМПОРТИРУЕМ НАШИ DTO
+from app.core.schemas import CandidateDTO, JobContextDTO
 
 logger = logging.getLogger(__name__)
 
@@ -14,15 +17,21 @@ class AvitoClient:
     def __init__(self):
         self.base_url = "https://api.avito.ru"
         self.token_url = f"{self.base_url}/token"
-        # Будем использовать один клиент для всех запросов (пул соединений)
-        self.http_client = httpx.AsyncClient(timeout=30.0)
+        # Создаем клиент без привязки к циклу событий при инициализации класса
+        self._http_client: Optional[httpx.AsyncClient] = None
+
+    @property
+    def http_client(self) -> httpx.AsyncClient:
+        """Ленивая инициализация http клиента"""
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(timeout=30.0)
+        return self._http_client
 
     async def _get_account_from_db(self, db) -> Account:
         """Получаем запись аккаунта Авито из БД"""
         result = await db.execute(select(Account).filter_by(platform="avito"))
         account = result.scalar_one_or_none()
         if not account:
-            # Если в БД еще нет аккаунта, создаем пустую запись
             account = Account(
                 platform="avito",
                 name="Основной аккаунт Авито",
@@ -34,33 +43,24 @@ class AvitoClient:
         return account
 
     async def get_access_token(self) -> str:
-        """
-        Умное получение токена:
-        1. Проверяет БД.
-        2. Если токен живой — возвращает.
-        3. Если протух или его нет — запрашивает новый по Client Credentials.
-        """
+        """Умное получение и обновление токена"""
         async with AsyncSessionLocal() as db:
             account = await self._get_account_from_db(db)
             auth = account.auth_data or {}
             
-            # Проверяем срок годности (с запасом 5 минут)
             expires_at = auth.get("expires_at")
             now = datetime.datetime.now(datetime.timezone.utc).timestamp()
 
             if auth.get("access_token") and expires_at and expires_at > (now + 300):
                 return auth["access_token"]
 
-            # Токен нужен новый
             logger.info("🔑 Запрашиваю новый Access Token для Авито...")
             
-            client_id = auth.get("client_id") or settings.integrations.google_sheets.get("AVITO_CLIENT_ID") # Пример забора из конфига
-            client_secret = auth.get("client_secret") or settings.integrations.google_sheets.get("AVITO_CLIENT_SECRET")
-            
-            # Если нет в БД, берем из переменных окружения (в продакшне лучше через БД)
-            import os
-            client_id = client_id or os.getenv("AVITO_CLIENT_ID")
-            client_secret = client_secret or os.getenv("AVITO_CLIENT_SECRET")
+            client_id = os.getenv("AVITO_CLIENT_ID")
+            client_secret = os.getenv("AVITO_CLIENT_SECRET")
+
+            if not client_id or not client_secret:
+                raise ValueError("AVITO_CLIENT_ID или AVITO_CLIENT_SECRET не заданы в .env")
 
             data = {
                 "grant_type": "client_credentials",
@@ -72,7 +72,6 @@ class AvitoClient:
             response.raise_for_status()
             token_data = response.json()
 
-            # Обновляем данные в БД
             new_auth = {
                 "client_id": client_id,
                 "client_secret": client_secret,
@@ -91,22 +90,19 @@ class AvitoClient:
         return {"Authorization": f"Bearer {token}"}
 
     async def setup_webhooks(self):
-        """
-        Проверка и автоматическая подписка на вебхуки.
-        Согласно ТЗ: проверяем наличие подписки на наш URL, если нет - создаем.
-        """
-        import os
-        target_url = os.getenv("WEBHOOK_BASE_URL") + "/webhooks/avito"
-        secret = os.getenv("AVITO_WEBHOOK_SECRET", "super_secret_key")
-
-        if not os.getenv("WEBHOOK_BASE_URL"):
+        """Автоматическая подписка на вебхуки"""
+        base_url = os.getenv("WEBHOOK_BASE_URL")
+        if not base_url:
             logger.error("❌ WEBHOOK_BASE_URL не задан в .env. Авто-подписка невозможна.")
             return
 
+        target_url = base_url.rstrip('/') + "/webhooks/avito"
+        secret = os.getenv("AVITO_WEBHOOK_SECRET", "super_secret_key")
+
         headers = await self.get_headers()
 
-        # 1. Проверяем подписки на ОТКЛИКИ (Job API)
         try:
+            # 1. Вебхуки откликов
             job_hook_res = await self.http_client.get(
                 f"{self.base_url}/job/v1/applications/webhooks", 
                 headers=headers
@@ -114,21 +110,17 @@ class AvitoClient:
             job_hook_res.raise_for_status()
             current_hooks = job_hook_res.json().get("webhooks", [])
             
-            is_subscribed = any(h["url"] == target_url for h in current_hooks)
-
-            if not is_subscribed:
+            if not any(h["url"] == target_url for h in current_hooks):
                 logger.info(f"📣 Подписываюсь на вебхуки откликов: {target_url}")
-                subscribe_res = await self.http_client.put(
+                await self.http_client.put(
                     f"{self.base_url}/job/v1/applications/webhook",
                     headers=headers,
                     json={"url": target_url, "secret": secret}
                 )
-                subscribe_res.raise_for_status()
             else:
                 logger.info("✅ Подписка на отклики уже активна")
 
-            # 2. Проверяем подписки на СООБЩЕНИЯ (Messenger V3)
-            # У Авито Мессенджера метод GET /messenger/v1/subscriptions
+            # 2. Вебхуки сообщений
             msg_hook_res = await self.http_client.get(
                 f"{self.base_url}/messenger/v1/subscriptions",
                 headers=headers
@@ -136,9 +128,7 @@ class AvitoClient:
             msg_hook_res.raise_for_status()
             msg_subs = msg_hook_res.json().get("subscriptions", [])
             
-            msg_subscribed = any(s["url"] == target_url for s in msg_subs)
-
-            if not msg_subscribed:
+            if not any(s["url"] == target_url for s in msg_subs):
                 logger.info(f"💬 Подписываюсь на вебхуки сообщений: {target_url}")
                 await self.http_client.post(
                     f"{self.base_url}/messenger/v3/webhook",
@@ -152,16 +142,14 @@ class AvitoClient:
             logger.error(f"❌ Ошибка при настройке вебхуков: {e}")
 
     async def get_candidate_details(self, apply_id: str) -> CandidateDTO:
-        """Получение инфо об отклике (скрин 'Работа с содержимым откликов')"""
+        """Получение инфо об отклике"""
         headers = await self.get_headers()
-        # В Авито инфа об отклике тянется по applyId (ids может быть списком)
-        url = f"{self.base_url}/job/v1/applications/ids={apply_id}"
+        url = f"{self.base_url}/job/v1/applications/{apply_id}"
         
         response = await self.http_client.get(url, headers=headers)
         response.raise_for_status()
-        data = response.json().get("applies", [{}])[0]
+        data = response.json()
         
-        # Вытаскиваем телефон и имя
         contacts = data.get("contacts", {})
         applicant = data.get("applicant", {})
         
@@ -169,11 +157,12 @@ class AvitoClient:
             full_name=applicant.get("name") or "Не указано",
             phone=contacts.get("phones", [None])[0],
             platform_user_id=str(contacts.get("user_id")),
-            location=applicant.get("city")
+            location=applicant.get("city"),
+            raw_payload=data
         )
 
     async def get_job_details(self, vacancy_id: str) -> JobContextDTO:
-        """Получение инфо о вакансии (скрин 'Просмотр данных вакансий')"""
+        """Получение инфо о вакансии"""
         headers = await self.get_headers()
         url = f"{self.base_url}/job/v2/vacancies/batch"
         
@@ -193,7 +182,7 @@ class AvitoClient:
         )
 
     async def send_message(self, user_id: str, chat_id: str, text: str):
-        """Отправка сообщения (скрин 'Messenger API / Отправка сообщения')"""
+        """Отправка сообщения в Авито"""
         headers = await self.get_headers()
         url = f"{self.base_url}/messenger/v1/accounts/{user_id}/chats/{chat_id}/messages"
         
@@ -206,5 +195,5 @@ class AvitoClient:
         response.raise_for_status()
         return response.json()
 
-# Экземпляр клиента
+# Создаем экземпляр
 avito = AvitoClient()
