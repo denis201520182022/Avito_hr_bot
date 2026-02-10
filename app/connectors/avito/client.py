@@ -101,30 +101,33 @@ class AvitoClient:
         headers = await self.get_headers()
 
         try:
-            # 1. Вебхуки ОТКЛИКОВ (Job API)
-            job_hook_url = f"{self.base_url}/job/v1/applications/webhooks"
+            ## Используем GET /job/v1/applications/webhooks (множественное число) для проверки списка
+            job_check_url = f"{self.base_url}/job/v1/applications/webhooks" # <--- ИСПРАВЛЕНО
+            current_job_hooks_list = [] # Ожидаем список вебхуков
+            try:
+                logger.info(f"--> GET {job_check_url}")
+                logger.info(f"    Headers: {headers}")
+                job_get_res = await self.http_client.get(job_check_url, headers=headers)
+                job_get_res.raise_for_status()
+                current_job_hooks_list = job_get_res.json().get("webhooks", []) # <--- Ожидаем ключ "webhooks" с массивом
+            except httpx.HTTPStatusError as e:
+                # Если вебхуков нет, API может вернуть пустой список, но не 404/204 для этого GET
+                # Тем не менее, оставляем общую обработку ошибок
+                logger.error(f"Ошибка при получении списка вебхуков откликов: {e}", exc_info=True)
+                # Продолжаем, считая список пустым, чтобы попытаться подписаться
             
-            # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
-            logger.info(f"--> GET {job_hook_url}")
-            logger.info(f"    Headers: {headers}")
-            # ---------------------------
-            
-            job_hook_res = await self.http_client.get(job_hook_url, headers=headers)
-            job_hook_res.raise_for_status()
-            current_hooks = job_hook_res.json().get("webhooks", [])
-            
-            if not any(h["url"] == target_url for h in current_hooks):
+            # Проверяем, существует ли уже вебхук с нашим target_url
+            if not any(h.get("url") == target_url for h in current_job_hooks_list):
                 logger.info(f"📣 Подписываюсь на вебхуки откликов: {target_url}")
-                put_url = f"{self.base_url}/job/v1/applications/webhook"
+                put_url = f"{self.base_url}/job/v1/applications/webhook" # ЭТОТ ЭНДПОИНТ (singular) ВЕРЕН ДЛЯ PUT
                 payload = {"url": target_url, "secret": secret}
 
-                # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
                 logger.info(f"--> PUT {put_url}")
                 logger.info(f"    Headers: {headers}")
                 logger.info(f"    Payload: {json.dumps(payload, indent=2)}")
-                # ---------------------------
 
                 await self.http_client.put(put_url, headers=headers, json=payload)
+                logger.info("✅ Подписка на отклики успешно настроена.")
             else:
                 logger.info("✅ Подписка на отклики уже активна")
 
