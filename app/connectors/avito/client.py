@@ -17,7 +17,10 @@ class AvitoClient:
     def __init__(self):
         self.base_url = "https://api.avito.ru"
         self.token_url = f"{self.base_url}/token"
-        # Создаем клиент без привязки к циклу событий при инициализации класса
+        
+        # Вот эта строка включит сырые логи
+        logging.getLogger("httpx").setLevel(logging.DEBUG)
+        
         self._http_client: Optional[httpx.AsyncClient] = None
 
     @property
