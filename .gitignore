@@ -5,9 +5,7 @@ __pycache__/
 venv/
 .env
 
-# DB & Migrations
-alembic.ini
-migrations/
+
 
 # Logs
 *.log
