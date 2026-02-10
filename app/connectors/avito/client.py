@@ -9,8 +9,10 @@ from app.db.session import AsyncSessionLocal
 from app.db.models import Account
 from app.core.config import settings
 from app.core.schemas import CandidateDTO, JobContextDTO
+import json # Импортируем для красивого вывода JSON в логах
 
-# Включаем подробное логирование HTTP-запросов
+# Включаем подробное логирование HTTP-запросов на уровне httpx
+# Это даст еще больше деталей о происходящем на низком уровне
 logging.getLogger("httpx").setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
@@ -61,8 +63,11 @@ class AvitoClient:
                 "client_secret": client_secret
             }
             
-            # Явное логирование запроса токена
+            # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
             logger.info(f"--> POST {self.token_url}")
+            logger.info(f"    Data: {data}")
+            # ---------------------------
+            
             response = await self.http_client.post(self.token_url, data=data)
             logger.info(f"<-- {response.status_code} {response.reason_phrase}")
             response.raise_for_status()
@@ -98,40 +103,59 @@ class AvitoClient:
         try:
             # 1. Вебхуки ОТКЛИКОВ (Job API)
             job_hook_url = f"{self.base_url}/job/v1/applications/webhooks"
+            
+            # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
+            logger.info(f"--> GET {job_hook_url}")
+            logger.info(f"    Headers: {headers}")
+            # ---------------------------
+            
             job_hook_res = await self.http_client.get(job_hook_url, headers=headers)
             job_hook_res.raise_for_status()
             current_hooks = job_hook_res.json().get("webhooks", [])
             
             if not any(h["url"] == target_url for h in current_hooks):
                 logger.info(f"📣 Подписываюсь на вебхуки откликов: {target_url}")
-                await self.http_client.put(
-                    f"{self.base_url}/job/v1/applications/webhook",
-                    headers=headers,
-                    json={"url": target_url, "secret": secret}
-                )
+                put_url = f"{self.base_url}/job/v1/applications/webhook"
+                payload = {"url": target_url, "secret": secret}
+
+                # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
+                logger.info(f"--> PUT {put_url}")
+                logger.info(f"    Headers: {headers}")
+                logger.info(f"    Payload: {json.dumps(payload, indent=2)}")
+                # ---------------------------
+
+                await self.http_client.put(put_url, headers=headers, json=payload)
             else:
                 logger.info("✅ Подписка на отклики уже активна")
 
-            # 2. Вебхуки СООБЩЕНИЙ (Messenger API v3) - ИСПРАВЛЕННЫЙ ЭНДПОИНТ
-            # Проверяем подписки через GET /messenger/v1/subscriptions
+            # 2. Вебхуки СООБЩЕНИЙ (Messenger API v3)
             msg_check_url = f"{self.base_url}/messenger/v1/subscriptions"
+            
+            # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
+            logger.info(f"--> GET {msg_check_url}")
+            logger.info(f"    Headers: {headers}")
+            # ---------------------------
+
             msg_hook_res = await self.http_client.get(msg_check_url, headers=headers)
             msg_hook_res.raise_for_status()
             msg_subs = msg_hook_res.json().get("subscriptions", [])
             
             if not any(s["url"] == target_url for s in msg_subs):
                 logger.info(f"💬 Подписываюсь на вебхуки сообщений: {target_url}")
-                # Подписываемся через POST /messenger/v3/webhook
-                await self.http_client.post(
-                    f"{self.base_url}/messenger/v3/webhook",
-                    headers=headers,
-                    json={"url": target_url}
-                )
+                post_url = f"{self.base_url}/messenger/v3/webhook"
+                payload = {"url": target_url}
+
+                # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
+                logger.info(f"--> POST {post_url}")
+                logger.info(f"    Headers: {headers}")
+                logger.info(f"    Payload: {json.dumps(payload, indent=2)}")
+                # ---------------------------
+
+                await self.http_client.post(post_url, headers=headers, json=payload)
             else:
                 logger.info("✅ Подписка на сообщения мессенджера активна")
 
         except httpx.HTTPStatusError as e:
-            # Выводим тело ответа при ошибке
             response_body = e.response.text
             logger.error(
                 f"❌ Ошибка при настройке вебхуков: {e}\n"
@@ -146,6 +170,11 @@ class AvitoClient:
         headers = await self.get_headers()
         url = f"{self.base_url}/job/v1/applications/{apply_id}"
         
+        # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
+        logger.info(f"--> GET {url}")
+        logger.info(f"    Headers: {headers}")
+        # ---------------------------
+
         response = await self.http_client.get(url, headers=headers)
         response.raise_for_status()
         data = response.json()
@@ -171,6 +200,12 @@ class AvitoClient:
             "fields": ["title", "description"]
         }
         
+        # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
+        logger.info(f"--> POST {url}")
+        logger.info(f"    Headers: {headers}")
+        logger.info(f"    Payload: {json.dumps(payload, indent=2)}")
+        # ---------------------------
+
         response = await self.http_client.post(url, headers=headers, json=payload)
         response.raise_for_status()
         vac_data = response.json()[0]
@@ -191,6 +226,12 @@ class AvitoClient:
             "type": "text"
         }
         
+        # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
+        logger.info(f"--> POST {url}")
+        logger.info(f"    Headers: {headers}")
+        logger.info(f"    Payload: {json.dumps(payload, indent=2)}")
+        # ---------------------------
+
         response = await self.http_client.post(url, headers=headers, json=payload)
         response.raise_for_status()
         return response.json()
