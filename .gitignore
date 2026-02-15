@@ -9,8 +9,9 @@ venv/
 
 # Logs
 *.log
-
+credentials.json
 # OS
 .DS_Store
 
 README.md
+migrations/

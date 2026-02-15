@@ -2,20 +2,19 @@
 import logging
 import httpx
 import datetime
+import asyncio
+from typing import List, Dict, Any, Optional
+from sqlalchemy.ext.asyncio import AsyncSession
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import os
-from typing import Optional
-from sqlalchemy import select
-from app.db.session import AsyncSessionLocal
+from app.utils.redis_lock import acquire_lock, release_lock, DistributedSemaphore 
 from app.db.models import Account
-from app.core.config import settings
-from app.core.schemas import CandidateDTO, JobContextDTO
-import json # Импортируем для красивого вывода JSON в логах
+from app.core.rabbitmq import mq
+from app.utils.redis_lock import acquire_lock, release_lock
+from app.utils.redis_lock import get_redis_client
 
-# Включаем подробное логирование HTTP-запросов на уровне httpx
-# Это даст еще больше деталей о происходящем на низком уровне
-logging.getLogger("httpx").setLevel(logging.DEBUG)
-logger = logging.getLogger(__name__)
-
+logger = logging.getLogger("avito.client")
+AVITO_CONCURRENCY_LIMIT = int(os.getenv("AVITO_CONCURRENCY_LIMIT", 5))
 class AvitoClient:
     def __init__(self):
         self.base_url = "https://api.avito.ru"
@@ -24,220 +23,348 @@ class AvitoClient:
 
     @property
     def http_client(self) -> httpx.AsyncClient:
-        if self._http_client is None:
+        if self._http_client is None or self._http_client.is_closed:
             self._http_client = httpx.AsyncClient(timeout=30.0)
         return self._http_client
 
-    async def _get_account_from_db(self, db) -> Account:
-        result = await db.execute(select(Account).filter_by(platform="avito"))
-        account = result.scalar_one_or_none()
-        if not account:
-            account = Account(platform="avito", name="Основной аккаунт Авито", auth_data={})
-            db.add(account)
-            await db.commit()
+    async def close(self):
+        if self._http_client and not self._http_client.is_closed:
+            await self._http_client.aclose()
+    
+    async def _send_alert(self, text: str):
+        try: await mq.publish("tg_alerts", {"type": "system", "text": text})
+        except: logger.error("Не удалось отправить алерт")
+
+    # --- АВТОРИЗАЦИЯ С БЛОКИРОВКОЙ ---
+    
+    async def get_token(self, account: Account, db: AsyncSession) -> str:
+        auth_data = account.auth_data or {}
+        now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        
+        if auth_data.get("access_token") and auth_data.get("expires_at", 0) > (now_ts + 300):
+            return auth_data["access_token"]
+        
+        lock_key = f"token_lock:{account.id}"
+        if not await acquire_lock(lock_key, timeout=20):
+            logger.info(f"⏳ Обновление токена для {account.id} уже в процессе. Ожидание...")
+            await asyncio.sleep(3)
             await db.refresh(account)
-        return account
+            return await self.get_token(account, db)
 
-    async def get_access_token(self) -> str:
-        async with AsyncSessionLocal() as db:
-            account = await self._get_account_from_db(db)
-            auth = account.auth_data or {}
+        try:
+            logger.info(f"🔑 Обновление токена для аккаунта {account.name} (ID: {account.id})")
             
-            expires_at = auth.get("expires_at")
-            now = datetime.datetime.now(datetime.timezone.utc).timestamp()
-
-            if auth.get("access_token") and expires_at and expires_at > (now + 300):
-                logger.debug("Используем токен из кэша БД")
-                return auth["access_token"]
-
-            logger.info("🔑 Запрашиваю новый Access Token для Авито...")
-            client_id = os.getenv("AVITO_CLIENT_ID")
-            client_secret = os.getenv("AVITO_CLIENT_SECRET")
-
+            client_id = auth_data.get("client_id")
+            client_secret = auth_data.get("client_secret")
             if not client_id or not client_secret:
-                raise ValueError("AVITO_CLIENT_ID или AVITO_CLIENT_SECRET не заданы в .env")
+                raise ValueError("В базе данных не найдены credentials (ID/Secret)")
 
-            data = {
+            payload = {
                 "grant_type": "client_credentials",
                 "client_id": client_id,
                 "client_secret": client_secret
             }
             
-            # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
-            logger.info(f"--> POST {self.token_url}")
-            logger.info(f"    Data: {data}")
-            # ---------------------------
-            
-            response = await self.http_client.post(self.token_url, data=data)
-            logger.info(f"<-- {response.status_code} {response.reason_phrase}")
-            response.raise_for_status()
-            
-            token_data = response.json()
-            new_auth = {
-                "client_id": client_id,
-                "client_secret": client_secret,
+            resp = await self.http_client.post(self.token_url, data=payload)
+            resp.raise_for_status()
+            token_data = resp.json()
+
+            new_auth = dict(auth_data)
+            new_auth.update({
                 "access_token": token_data["access_token"],
-                "expires_at": now + token_data["expires_in"],
-                "token_type": token_data["token_type"]
-            }
+                "expires_at": now_ts + token_data["expires_in"]
+            })
+            
             account.auth_data = new_auth
             await db.commit()
             
-            logger.info("✅ Токен Авито успешно обновлен")
+            logger.info(f"✅ Токен успешно получен для аккаунта {account.id}")
             return token_data["access_token"]
+        except Exception as e:
+            error_msg = f"❌ КРИТИЧЕСКАЯ ОШИБКА АВТОРИЗАЦИИ Avito для аккаунта {account.name}: {e}"
+            logger.error(error_msg, exc_info=True)
+            await self._send_alert(error_msg)
+            raise
+        finally:
+            await release_lock(lock_key)
 
-    async def get_headers(self):
-        token = await self.get_access_token()
-        return {"Authorization": f"Bearer {token}"}
+    # --- УНИВЕРСАЛЬНЫЙ ЗАПРОС С РЕТРАЯМИ ---
 
-    async def setup_webhooks(self):
-        base_url = os.getenv("WEBHOOK_BASE_URL")
-        if not base_url:
-            logger.error("❌ WEBHOOK_BASE_URL не задан. Авто-подписка невозможна.")
-            return
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=1, max=10),
+        retry=retry_if_exception_type(httpx.HTTPError),
+        reraise=True
+    )
+    async def _request(self, method: str, path: str, account: Account, db: AsyncSession, **kwargs) -> Any:
+        url = f"{self.base_url}{path}"
+        token = await self.get_token(account, db)
+        headers = kwargs.pop("headers", {})
+        headers["Authorization"] = f"Bearer {token}"
+        
+        try:
+            # === НАЧАЛО ИЗМЕНЕНИЙ ===
+            # Ограничиваем количество одновременных запросов ко всему API Avito
+            async with DistributedSemaphore(name="avito_api_global", limit=AVITO_CONCURRENCY_LIMIT):
+                resp = await self.http_client.request(method, url, headers=headers, **kwargs)
+            # === КОНЕЦ ИЗМЕНЕНИЙ ===
+            
+            
+            if resp.status_code == 401:
+                logger.warning(f"⚠️ 401 Unauthorized для {account.id}. Сброс токена и повтор...")
+                auth = dict(account.auth_data)
+                auth["expires_at"] = 0
+                account.auth_data = auth
+                await db.commit()
+                
+                token = await self.get_token(account, db)
+                headers["Authorization"] = f"Bearer {token}"
+                async with DistributedSemaphore(name="avito_api_global", limit=AVITO_CONCURRENCY_LIMIT):
+                    resp = await self.http_client.request(method, url, headers=headers, **kwargs)
 
-        target_url = base_url.rstrip('/') + "/webhooks/avito"
-        secret = os.getenv("AVITO_WEBHOOK_SECRET", "super_secret_key")
-        headers = await self.get_headers()
+            resp.raise_for_status()
+            return resp.json()
+            
+        except httpx.HTTPStatusError as e:
+            error_msg = f"❌ API Error {e.response.status_code} на {url}: {e.response.text}"
+            logger.error(error_msg)
+            # Если это последняя попытка ретрая, шлем алерт
+            if getattr(e.request, 'extensions', {}).get('retry_attempt') == 3:
+                await self._send_alert(error_msg)
+            raise
+
+    # --- ВЕБХУКИ (MESSENGER API V3) ---
+
+    async def check_and_register_webhooks(self, account: Account, db: AsyncSession, target_url: str):
+        if not account.auth_data.get("user_id"):
+            try:
+                me = await self._request("GET", "/core/v1/accounts/self", account, db)
+                auth = dict(account.auth_data)
+                auth["user_id"] = str(me["id"])
+                account.auth_data = auth
+                await db.commit()
+                logger.info(f"👤 Получен UserID для аккаунта {account.id}: {me['id']}")
+            except Exception as e:
+                logger.error(f"Не удалось получить self info для {account.id}: {e}")
 
         try:
-            ## Используем GET /job/v1/applications/webhooks (множественное число) для проверки списка
-            job_check_url = f"{self.base_url}/job/v1/applications/webhooks" # <--- ИСПРАВЛЕНО
-            current_job_hooks_list = [] # Ожидаем список вебхуков
-            try:
-                logger.info(f"--> GET {job_check_url}")
-                logger.info(f"    Headers: {headers}")
-                job_get_res = await self.http_client.get(job_check_url, headers=headers)
-                job_get_res.raise_for_status()
-                current_job_hooks_list = job_get_res.json().get("webhooks", []) # <--- Ожидаем ключ "webhooks" с массивом
-            except httpx.HTTPStatusError as e:
-                # Если вебхуков нет, API может вернуть пустой список, но не 404/204 для этого GET
-                # Тем не менее, оставляем общую обработку ошибок
-                logger.error(f"Ошибка при получении списка вебхуков откликов: {e}", exc_info=True)
-                # Продолжаем, считая список пустым, чтобы попытаться подписаться
+            subs_data = await self._request("POST", "/messenger/v1/subscriptions", account, db)
+            subscriptions = subs_data.get("subscriptions", [])
             
-            # Проверяем, существует ли уже вебхук с нашим target_url
-            if not any(h.get("url") == target_url for h in current_job_hooks_list):
-                logger.info(f"📣 Подписываюсь на вебхуки откликов: {target_url}")
-                put_url = f"{self.base_url}/job/v1/applications/webhook" # ЭТОТ ЭНДПОИНТ (singular) ВЕРЕН ДЛЯ PUT
-                payload = {"url": target_url, "secret": secret}
-
-                logger.info(f"--> PUT {put_url}")
-                logger.info(f"    Headers: {headers}")
-                logger.info(f"    Payload: {json.dumps(payload, indent=2)}")
-
-                await self.http_client.put(put_url, headers=headers, json=payload)
-                logger.info("✅ Подписка на отклики успешно настроена.")
+            is_active = any(s.get("url") == target_url for s in subscriptions)
+            
+            if not is_active:
+                logger.info(f"🔌 Регистрация Messenger Webhook для {account.id} -> {target_url}")
+                await self._request(
+                    "POST", "/messenger/v3/webhook", account, db, json={"url": target_url}
+                )
+                logger.info(f"✅ Вебхук успешно привязан")
             else:
-                logger.info("✅ Подписка на отклики уже активна")
-
-            # 2. Вебхуки СООБЩЕНИЙ (Messenger API v3)
-            msg_check_url = f"{self.base_url}/messenger/v1/subscriptions"
-            
-            # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
-            logger.info(f"--> GET {msg_check_url}")
-            logger.info(f"    Headers: {headers}")
-            # ---------------------------
-
-            msg_hook_res = await self.http_client.post(msg_check_url, headers=headers)
-            msg_hook_res.raise_for_status()
-            msg_subs = msg_hook_res.json().get("subscriptions", [])
-            
-            if not any(s["url"] == target_url for s in msg_subs):
-                logger.info(f"💬 Подписываюсь на вебхуки сообщений: {target_url}")
-                post_url = f"{self.base_url}/messenger/v3/webhook"
-                payload = {"url": target_url}
-
-                # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
-                logger.info(f"--> POST {post_url}")
-                logger.info(f"    Headers: {headers}")
-                logger.info(f"    Payload: {json.dumps(payload, indent=2)}")
-                # ---------------------------
-
-                await self.http_client.post(post_url, headers=headers, json=payload)
-            else:
-                logger.info("✅ Подписка на сообщения мессенджера активна")
-
-        except httpx.HTTPStatusError as e:
-            response_body = e.response.text
-            logger.error(
-                f"❌ Ошибка при настройке вебхуков: {e}\n"
-                f"URL: {e.request.url}\n"
-                f"Response Body: {response_body}"
-            )
+                logger.debug(f"👌 Вебхук для аккаунта {account.id} уже настроен")
         except Exception as e:
-            logger.error(f"❌ Неизвестная ошибка при настройке вебхуков: {e}", exc_info=True)
+            error_msg = f"❌ Ошибка регистрации вебхука для {account.name}: {e}"
+            logger.error(error_msg)
+            await self._send_alert(error_msg)
 
-    async def get_candidate_details(self, apply_id: str) -> CandidateDTO:
-        """Получение инфо об отклике"""
-        headers = await self.get_headers()
-        url = f"{self.base_url}/job/v1/applications/{apply_id}"
-        
-        # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
-        logger.info(f"--> GET {url}")
-        logger.info(f"    Headers: {headers}")
-        # ---------------------------
+    # --- ПОЛЛИНГ ОТКЛИКОВ (JOB API V1) ---
 
-        response = await self.http_client.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+    async def get_new_applications(self, account: Account, db: AsyncSession) -> List[Dict]:
+        redis = get_redis_client()
+        cursor_key = f"avito_cursor:{account.id}"
         
-        contacts = data.get("contacts", {})
-        applicant = data.get("applicant", {})
+        # 1. Пытаемся взять курсор из Redis
+        cursor = await redis.get(cursor_key)
         
-        return CandidateDTO(
-            full_name=applicant.get("name") or "Не указано",
-            phone=contacts.get("phones", [None])[0],
-            platform_user_id=str(contacts.get("user_id")),
-            location=applicant.get("city"),
-            raw_payload=data
-        )
+        # Точка отсчета — 24 часа назад (в формате ISO или как требует API)
+        # Для updatedAtFrom Авито обычно ждет YYYY-MM-DD
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        yesterday_str = (now_utc - datetime.timedelta(hours=24)).strftime("%Y-%m-%d")
+        
+        params = {
+            "limit": 100
+        }
 
-    async def get_job_details(self, vacancy_id: str) -> JobContextDTO:
-        """Получение инфо о вакансии"""
-        headers = await self.get_headers()
-        url = f"{self.base_url}/job/v2/vacancies/batch"
-        
+        # Если курсора нет — берем за последние сутки
+        if cursor:
+            params["cursor"] = cursor
+        else:
+            params["updatedAtFrom"] = yesterday_str
+
+        try:
+            # 2. Получаем список ID (используем ключ 'applies' из доки)
+            resp_ids = await self._request("GET", "/job/v1/applications/get_ids", account, db, params=params)
+            
+            app_list = resp_ids.get("applies", []) # Исправлено с 'applications' на 'applies'
+            if not app_list:
+                return []
+
+            # 3. Собираем только те ID, которые не старше 24 часов (на случай, если API вернуло лишнее)
+            # Примечание: В ответе get_ids обычно нет даты, только ID. 
+            # Поэтому фильтрацию по времени лучше сделать после получения деталей.
+            application_ids = [str(item["id"]) for item in app_list]
+
+            # 4. Получаем детали откликов
+            details_resp = await self._request(
+                "POST", "/job/v1/applications/get_by_ids", account, db, json={"ids": application_ids}
+            )
+            
+            full_applications = details_resp.get("applications", [])
+
+            # 5. Фильтруем результат строго по времени (updated_at >= now - 24h)
+            # Авито возвращает timestamps в секундах или ISO строки в зависимости от версии
+            cutoff_timestamp = (now_utc - datetime.timedelta(hours=24)).timestamp()
+            
+            filtered_apps = []
+            for app in full_applications:
+                # В Job API обычно поле updatedAt в секундах
+                app_updated = app.get("updated_at", 0)
+                if app_updated >= cutoff_timestamp:
+                    filtered_apps.append(app)
+
+            # 6. Сохраняем новый курсор в Redis (ставим TTL 2 дня, чтобы не копились вечно)
+            new_cursor = resp_ids.get("cursor")
+            if new_cursor:
+                await redis.set(cursor_key, new_cursor, ex=172800) # 48 часов
+
+            return filtered_apps
+
+        except Exception as e:
+            error_msg = f"❌ Ошибка полинга откликов (Account {account.id}): {e}"
+            logger.error(error_msg)
+            # Важно: не бросаем исключение выше, чтобы один упавший аккаунт не вешал весь цикл
+            return []
+
+    # --- ОТПРАВКА СООБЩЕНИЙ (MESSENGER API V1) ---
+
+    async def send_message(self, account: Account, db: AsyncSession, chat_id: str, text: str, user_id: str = "me"):
+        # Если в базе нет user_id, используем "me"
+        avito_user_id = account.auth_data.get("user_id", user_id)
+        path = f"/messenger/v1/accounts/{avito_user_id}/chats/{chat_id}/messages"
+        payload = {"message": {"text": text}, "type": "text"}
+        return await self._request("POST", path, account, db, json=payload)
+
+    async def get_vacancy_details(self, account: Account, db: AsyncSession, vacancy_id: int) -> Dict:
+        path = f"/job/v2/vacancies/{vacancy_id}"
+        params = {"fields": "title,description,addressDetails"}
+        return await self._request("GET", path, account, db, params=params)
+
+    async def get_chat_context(self, account: Account, db: AsyncSession, chat_id: str) -> Dict:
+        user_id = account.auth_data.get("user_id")
+        path = f"/messenger/v2/accounts/{user_id}/chats/{chat_id}"
+        return await self._request("GET", path, account, db)
+    
+    async def get_chat_messages(self, user_id: str, chat_id: str, account: Account, db: AsyncSession, limit: int = 20):
+        path = f"/messenger/v3/accounts/{user_id}/chats/{chat_id}/messages"
+        data = await self._request("GET", path, account, db, params={"limit": limit})
+        return data.get("messages", [])
+
+    async def get_job_details(self, vacancy_id: str, account: Account, db: AsyncSession):
+        path = "/job/v2/vacancies/batch"
+        # 1. Убираем ограничение по fields или добавляем все нужные, включая 'params' и 'salary'
         payload = {
             "ids": [int(vacancy_id)],
-            "fields": ["title", "description"]
+            "fields": ["title", "description", "addressDetails", "salary", "url"],
+            "params": [
+                "address", "experience", "schedule", "employment", 
+                "payout_frequency", "age_preferences", "bonuses"
+            ]
         }
         
-        # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
-        logger.info(f"--> POST {url}")
-        logger.info(f"    Headers: {headers}")
-        logger.info(f"    Payload: {json.dumps(payload, indent=2)}")
-        # ---------------------------
-
-        response = await self.http_client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        vac_data = response.json()[0]
+        data = await self._request("POST", path, account, db, json=payload)
         
-        return JobContextDTO(
-            external_id=str(vac_data["id"]),
-            title=vac_data["title"],
-            description=vac_data["description"]
+        if not data or len(data) == 0:
+            raise ValueError("Vacancy not found")
+            
+        vac = data[0]
+        
+        # 2. Формируем расширенный текст со всеми деталями
+        full_description_text = self._format_vacancy_full_text(vac)
+
+        from dataclasses import dataclass
+        @dataclass
+        class VacDTO:
+            title: str
+            description: str # Здесь теперь будет "красивый" полный текст
+            city: str
+            raw_json: dict   # Добавим на всякий случай и сырые данные
+
+        return VacDTO(
+            title=vac.get("title", "Без названия"),
+            description=full_description_text,
+            city=vac.get("addressDetails", {}).get("city", "Не указан"),
+            raw_json=vac 
         )
 
-    async def send_message(self, user_id: str, chat_id: str, text: str):
-        """Отправка сообщения в Авито"""
-        headers = await self.get_headers()
-        url = f"{self.base_url}/messenger/v1/accounts/{user_id}/chats/{chat_id}/messages"
+    def _format_vacancy_full_text(self, vac: dict) -> str:
+        """Вспомогательный метод для превращения JSON Авито в читаемый текст с заголовками"""
+        lines = []
         
-        payload = {
-            "message": {"text": text},
-            "type": "text"
-        }
+        # Заголовок и ссылка
+        lines.append(f"📋 ВАКАНСИЯ: {vac.get('title')}")
+        if vac.get('url'):
+            lines.append(f"🔗 Ссылка: https://www.avito.ru{vac.get('url')}")
+        lines.append("")
+
+        # Зарплата
+        salary = vac.get('salary')
+        if isinstance(salary, (int, float)):
+            lines.append(f"💰 Зарплата: {salary} руб.")
+        elif isinstance(salary, dict):
+            lines.append(f"💰 Зарплата: от {salary.get('from')} до {salary.get('to')} руб.")
         
-        # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ---
-        logger.info(f"--> POST {url}")
-        logger.info(f"    Headers: {headers}")
-        logger.info(f"    Payload: {json.dumps(payload, indent=2)}")
-        # ---------------------------
+        # Локация
+        addr = vac.get('addressDetails', {})
+        lines.append(f"📍 Адрес: {addr.get('city', '')}, {addr.get('address', '')}")
+        lines.append("")
 
-        response = await self.http_client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        return response.json()
+        # Характеристики (params)
+        params = vac.get('params', {})
+        if params:
+            lines.append("🏗 УСЛОВИЯ И ТРЕБОВАНИЯ:")
+            mapping = {
+                "experience": "Опыт",
+                "schedule": "График",
+                "employment": "Занятость",
+                "payout_frequency": "Выплаты",
+                "age_preferences": "Предпочтения",
+                "bonuses": "Бонусы"
+            }
+            for key, label in mapping.items():
+                val = params.get(key)
+                if val:
+                    if isinstance(val, list): val = ", ".join(map(str, val))
+                    lines.append(f"  • {label}: {val}")
+            lines.append("")
 
-# Создаем экземпляр
+        # Основное описание
+        lines.append("📝 ОПИСАНИЕ:")
+        lines.append(vac.get('description', 'Нет описания'))
+        
+        return "\n".join(lines)
+    
+    async def search_resumes(self, account: Account, db: AsyncSession, params: dict) -> dict:
+        """
+        Поиск резюме по параметрам (GET /job/v1/resumes/)
+        """
+        path = "/job/v1/resumes/"
+        return await self._request("GET", path, account, db, params=params)
+        
+        return await self._request("GET", path, account, db, params=params)
+    async def get_resume_details(self, account: Account, db: AsyncSession, resume_id: str) -> Dict:
+        """
+        Запрос к /job/v2/resumes/{resume_id}
+        """
+        path = f"/job/v2/resumes/{resume_id}"
+        # Запрашиваем все поля для максимального профиля
+        return await self._request("GET", path, account, db)
+    async def search_cvs(self, account: Account, db: AsyncSession, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Поиск резюме по параметрам"""
+        path = "/job/v1/resumes/"
+        return await self._request("GET", path, account, db, params=params)
+
+    async def get_resume_contacts(self, account: Account, db: AsyncSession, resume_id: str) -> Dict[str, Any]:
+        """Получение контактов резюме, включая chat_id"""
+        path = f"/job/v1/resumes/{resume_id}/contacts/"
+        return await self._request("GET", path, account, db)
+
 avito = AvitoClient()

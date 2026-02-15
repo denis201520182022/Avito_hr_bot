@@ -210,15 +210,7 @@ class AnalyticsEvent(Base):
     job_context_id = Column(Integer, ForeignKey('job_contexts.id'))
     dialogue_id = Column(Integer, ForeignKey('dialogues.id'))
     
-    # Типы событий: 
-    # 'lead_created' - новый отклик
-    # 'first_contact' - кандидат ответил боту (начало диалога)
-    # 'qualified' - прошел отбор
-    # 'rejected_by_bot' - не прошел критерии
-    # 'rejected_by_candidate' - сам отказался
-    # 'interview_scheduled' - записан на собес
-    # 'reminder_sent' - отправлен дожим
-    # 'no_show' - не пришел (по итогам follow-up)
+
     event_type = Column(String(50), index=True)
     
     # Доп. данные (например, причина отказа или модель ИИ)
