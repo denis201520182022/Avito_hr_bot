@@ -25,6 +25,8 @@ class RabbitMQManager:
             await self.channel.declare_queue("engine_tasks", durable=True)
             await self.channel.declare_queue("outbound_messages", durable=True)
             await self.channel.declare_queue("integrations", durable=True)
+            await self.channel.declare_queue("tg_alerts", durable=True)
+            await self.channel.declare_queue("tg_notifications", durable=True)
             
             logger.info("✅ Успешное подключение к RabbitMQ и инициализация очередей")
 
