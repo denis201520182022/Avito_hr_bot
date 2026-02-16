@@ -15,10 +15,6 @@ class SilenceReminderLevel(BaseModel):
     text: str
     stop_bot: bool = False
 
-class SilenceConfig(BaseModel):
-    enabled: bool
-    levels: List[SilenceReminderLevel]
-
 class QuietTimeConfig(BaseModel):
     enabled: bool
     start: str
@@ -27,20 +23,20 @@ class QuietTimeConfig(BaseModel):
 
 class SilenceConfig(BaseModel):
     enabled: bool
-    quiet_time: QuietTimeConfig # Добавили вложенную схему
+    quiet_time: QuietTimeConfig
     levels: List[SilenceReminderLevel]
 
 class InterviewReminderItem(BaseModel):
     id: str
     type: Literal["fixed_time", "relative"]
-    days_before: Optional[int] = 0        # Для fixed_time (1 = день до, 0 = в день собеса)
-    at_time: Optional[str] = None        # Для fixed_time (например "20:00")
-    minutes_before: Optional[int] = None # Для relative (например 120)
+    days_before: Optional[int] = 0
+    at_time: Optional[str] = None
+    minutes_before: Optional[int] = None
     text: str
 
 class InterviewConfig(BaseModel):
     enabled: bool
-    items: List[InterviewReminderItem] # Теперь это список
+    items: List[InterviewReminderItem]
 
 class RemindersConfig(BaseModel):
     silence: SilenceConfig
@@ -65,10 +61,10 @@ class LLMConfig(BaseModel):
     main_model: str
     smart_model: str
     temperature: float
-    max_tokens: int # Добавлено согласно config.yaml
-    request_timeout: int # Добавлено согласно config.yaml
+    max_tokens: int
+    request_timeout: int
 
-class MessagesConfig(BaseModel): # НОВАЯ СХЕМА
+class MessagesConfig(BaseModel):
     initial_greeting: str
     qualification_failed_farewell: str
 
@@ -78,22 +74,23 @@ class Settings(BaseModel):
     bot_id: str
     bot_role_name: str
     
-    channels: Dict[str, List[str]] # active_platforms внутри channels
-    llm: LLMConfig # Блок llm
+    channels: Dict[str, List[str]]
+    llm: LLMConfig
     features: FeaturesConfig
     knowledge_base: KBConfig
     google_sheets: GoogleSheetsConfig
     reminders: RemindersConfig
-    messages: MessagesConfig # НОВЫЙ БЛОК
+    messages: MessagesConfig
 
-    # Параметры из .env
+    # --- ПАРАМЕТРЫ ИЗ .ENV ---
+    # Все переменные окружения должны быть здесь, чтобы Pydantic их увидел
+    
     DATABASE_URL: str = Field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
     RABBITMQ_URL: str = Field(default_factory=lambda: os.getenv("RABBITMQ_URL", ""))
     REDIS_URL: str = Field(default_factory=lambda: os.getenv("REDIS_URL", ""))
     TELEGRAM_BOT_TOKEN: str = Field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
-        # как мы решили в llm.py, поэтому их здесь нет.
-        
-    # WEBHOOK_BASE_URL также берется напрямую из ENV в main.py, как и раньше.
+    AVITO_WEBHOOK_SECRET: str = Field(default_factory=lambda: os.getenv("AVITO_WEBHOOK_SECRET", "")) # <--- ДОБАВЛЕНО
+    OPENAI_API_KEY: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))             # <--- ДОБАВЛЕНО
 
     @classmethod
     def load(cls, path: str = "config.yaml"):
