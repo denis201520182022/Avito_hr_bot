@@ -998,8 +998,7 @@ class Engine:
             # === 12. ВАЛИДАЦИЯ ДАТЫ И ВРЕМЕНИ (АУДИТ + РЕГЛАМЕНТ + СЛОТЫ) ===
             DATE_CRITICAL_STATES = ['init_scheduling_spb', 'scheduling_spb_day', 'scheduling_spb_time', 'interview_scheduled_spb']
             
-            interview_date = extracted_data.get("interview_date")
-            interview_time = extracted_data.get("interview_time")
+            
 
             # Список ключевых слов (как в HH)
             TIME_KEYWORDS = [
@@ -1009,7 +1008,8 @@ class Engine:
             ]
 
             if new_state in DATE_CRITICAL_STATES:
-                
+                interview_date = extracted_data.get("interview_date")
+                interview_time = extracted_data.get("interview_time")
                 # Проверяем наличие маркеров времени
                 bot_text_low = (bot_response_text or "").lower()
                 user_text_low = combined_masked_message.lower()
@@ -1029,7 +1029,7 @@ class Engine:
                     if stored_date == interview_date and not has_time_keywords:
                         ctx_logger.debug("Дата совпадает с сохраненной и нет новых триггеров. Пропуск аудита.")
                         run_audit = False
-                    elif stored_date == interview_date:
+                    elif stored_date == interview_date: 
                         ctx_logger.info("Дата совпадает, но найдены временные триггеры. ПРИНУДИТЕЛЬНЫЙ АУДИТ.")
 
                     if run_audit:
@@ -1092,91 +1092,92 @@ class Engine:
                         if verified_date != "none":
                             interview_date = verified_date
 
-                    # --- ШАГ 2: ПОДСКАЗКА ДНЯ НЕДЕЛИ И РЕГЛАМЕНТА (HINT) ---
-                    # Если дата подтверждена, проверяем, что на неё есть в Google Таблице
-                    try:
-                        # 1. Получаем текущее время в МСК для сравнения (логика "Сегодня")
-                        now_msk = datetime.datetime.now(MOSCOW_TZ)
-                        today_str = now_msk.strftime('%Y-%m-%d')
-                        current_hour = now_msk.hour
+                    if interview_date:
+                        # --- ШАГ 2: ПОДСКАЗКА ДНЯ НЕДЕЛИ И РЕГЛАМЕНТА (HINT) ---
+                        # Если дата подтверждена, проверяем, что на неё есть в Google Таблице
+                        try:
+                            # 1. Получаем текущее время в МСК для сравнения (логика "Сегодня")
+                            now_msk = datetime.datetime.now(MOSCOW_TZ)
+                            today_str = now_msk.strftime('%Y-%m-%d')
+                            current_hour = now_msk.hour
 
-                        # 2. Запрашиваем РЕАЛЬНЫЕ свободные слоты из Google Sheets
-                        
-                        available_slots = await sheets_service.get_available_slots(interview_date)
+                            # 2. Запрашиваем РЕАЛЬНЫЕ свободные слоты из Google Sheets
+                            
+                            available_slots = await sheets_service.get_available_slots(interview_date)
 
-                        # 3. Применяем фильтрацию для "Сегодня" (как в HH)
-                        if interview_date == today_str:
-                            # Оставляем только те слоты, которые минимум на 1 час позже текущего времени
-                            available_slots = [s for s in available_slots if int(s.split(':')[0]) > current_hour]
-
-                        # 4. Вычисляем день недели для текста команды
-                        v_date_obj = datetime.datetime.strptime(interview_date, '%Y-%m-%d')
-                        weekday_idx = v_date_obj.weekday()
-                        weekdays_ru = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
-                        correct_weekday = weekdays_ru[weekday_idx]
-
-                        # 5. Формируем текст инструкции (Системная команда)
-                        hint_content = None
-
-                        if weekday_idx == 6: # Воскресенье (даже если в таблице есть строки, мы их игнорим по логике HH)
-                            hint_content = (
-                                f"[SYSTEM COMMAND] Внимание!!! {interview_date} это {correct_weekday}!!! "
-                                f"По воскресеньям собеседования не проводятся. Запись невозможна. Предложи другой день."
-                            )
-                        elif not available_slots: # Если в таблице нет слотов "Свободно" или на сегодня всё вышло
+                            # 3. Применяем фильтрацию для "Сегодня" (как в HH)
                             if interview_date == today_str:
-                                time_now = now_msk.strftime('%H:%M')
+                                # Оставляем только те слоты, которые минимум на 1 час позже текущего времени
+                                available_slots = [s for s in available_slots if int(s.split(':')[0]) > current_hour]
+
+                            # 4. Вычисляем день недели для текста команды
+                            v_date_obj = datetime.datetime.strptime(interview_date, '%Y-%m-%d')
+                            weekday_idx = v_date_obj.weekday()
+                            weekdays_ru = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+                            correct_weekday = weekdays_ru[weekday_idx]
+
+                            # 5. Формируем текст инструкции (Системная команда)
+                            hint_content = None
+
+                            if weekday_idx == 6: # Воскресенье (даже если в таблице есть строки, мы их игнорим по логике HH)
                                 hint_content = (
-                                    f"[SYSTEM COMMAND] Внимание!!! На сегодня ({interview_date}) запись уже окончена "
-                                    f"(сейчас {time_now}). Предложи кандидату выбрать другой день (завтра или ближайший будний)."
+                                    f"[SYSTEM COMMAND] Внимание!!! {interview_date} это {correct_weekday}!!! "
+                                    f"По воскресеньям собеседования не проводятся. Запись невозможна. Предложи другой день."
                                 )
+                            elif not available_slots: # Если в таблице нет слотов "Свободно" или на сегодня всё вышло
+                                if interview_date == today_str:
+                                    time_now = now_msk.strftime('%H:%M')
+                                    hint_content = (
+                                        f"[SYSTEM COMMAND] Внимание!!! На сегодня ({interview_date}) запись уже окончена "
+                                        f"(сейчас {time_now}). Предложи кандидату выбрать другой день (завтра или ближайший будний)."
+                                    )
+                                else:
+                                    hint_content = (
+                                        f"[SYSTEM COMMAND] Внимание!!! На {interview_date} ({correct_weekday}) нет свободных мест "
+                                        f"в графике. Ты ОБЯЗАНА сообщить об этом и предложить выбрать любой другой свободный день."
+                                    )
                             else:
+                                # Если слоты есть, даем боту их список (как в HH)
+                                slots_str = ", ".join(available_slots)
                                 hint_content = (
-                                    f"[SYSTEM COMMAND] Внимание!!! На {interview_date} ({correct_weekday}) нет свободных мест "
-                                    f"в графике. Ты ОБЯЗАНА сообщить об этом и предложить выбрать любой другой свободный день."
+                                    f"[SYSTEM COMMAND] Внимание!!! На {interview_date} ({correct_weekday}) строго разрешены "
+                                    f"только следующие слоты: {slots_str}. "
+                                    f"Ты ОБЯЗАНА перечислить ВСЕ эти варианты ({slots_str}) в своем ответе, "
+                                    f"чтобы кандидат мог выбрать один из них."
                                 )
-                        else:
-                            # Если слоты есть, даем боту их список (как в HH)
-                            slots_str = ", ".join(available_slots)
-                            hint_content = (
-                                f"[SYSTEM COMMAND] Внимание!!! На {interview_date} ({correct_weekday}) строго разрешены "
-                                f"только следующие слоты: {slots_str}. "
-                                f"Ты ОБЯЗАНА перечислить ВСЕ эти варианты ({slots_str}) в своем ответе, "
-                                f"чтобы кандидат мог выбрать один из них."
-                            )
 
-                        # 6. Проверяем историю на дубли (анти-луп из HH)
-                        history_to_check = (dialogue.history or [])[-5:]
-                        already_hinted = any(hint_content == m.get('content') for m in history_to_check)
+                            # 6. Проверяем историю на дубли (анти-луп из HH)
+                            history_to_check = (dialogue.history or [])[-5:]
+                            already_hinted = any(hint_content == m.get('content') for m in history_to_check)
 
-                        if hint_content and not already_hinted:
-                            ctx_logger.info(f"[{dialogue.external_chat_id}] Добавляю регламент из Google Sheets для {interview_date}")
-                            
-                            hint_cmd = {
-                                'message_id': f'sys_hint_{time.time()}',
-                                'role': 'user',
-                                'content': hint_content,
-                                'timestamp_utc': datetime.datetime.now(datetime.timezone.utc).isoformat()
-                            }
-                            
-                            # Сохраняем и вызываем перегенерацию
-                            dialogue.history = (dialogue.history or []) + user_entries_to_history + [hint_cmd]
-                            await db.commit()
-                            
-                            
-                            await mq.publish("engine_tasks", {"dialogue_id": dialogue.id, "trigger": "slot_hint_retry"})
-                            return 
+                            if hint_content and not already_hinted:
+                                ctx_logger.info(f"[{dialogue.external_chat_id}] Добавляю регламент из Google Sheets для {interview_date}")
+                                
+                                hint_cmd = {
+                                    'message_id': f'sys_hint_{time.time()}',
+                                    'role': 'user',
+                                    'content': hint_content,
+                                    'timestamp_utc': datetime.datetime.now(datetime.timezone.utc).isoformat()
+                                }
+                                
+                                # Сохраняем и вызываем перегенерацию
+                                dialogue.history = (dialogue.history or []) + user_entries_to_history + [hint_cmd]
+                                await db.commit()
+                                
+                                
+                                await mq.publish("engine_tasks", {"dialogue_id": dialogue.id, "trigger": "slot_hint_retry"})
+                                return 
 
-                    except Exception as e:
-                        ctx_logger.error(f"Ошибка в этапе Hint (Google Sheets): {e}")
-                        await mq.publish("tg_alerts", {
-                            "type": "system",
-                            "text": f"🚨 **СБОЙ GOOGLE SHEETS:** Не удалось получить слоты для диалога `{dialogue.id}`. Проверьте таблицу!",
-                            "alert_type": "admin_only"
-                        })
-                        # Здесь я бы советовал делать raise e, чтобы задача ушла в ретрай, 
-                        # если тебе важно, чтобы бот видел регламент
-                        raise e
+                        except Exception as e:
+                            ctx_logger.error(f"Ошибка в этапе Hint (Google Sheets): {e}")
+                            await mq.publish("tg_alerts", {
+                                "type": "system",
+                                "text": f"🚨 **СБОЙ GOOGLE SHEETS:** Не удалось получить слоты для диалога `{dialogue.id}`. Проверьте таблицу!",
+                                "alert_type": "admin_only"
+                            })
+                            # Здесь я бы советовал делать raise e, чтобы задача ушла в ретрай, 
+                            # если тебе важно, чтобы бот видел регламент
+                            raise e
 
             # =====================================================================
             # [START] ШАГ 3: ЖЕСТКАЯ ВАЛИДАЦИЯ ВРЕМЕНИ (TIME ENFORCEMENT)
