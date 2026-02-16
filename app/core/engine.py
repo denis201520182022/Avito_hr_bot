@@ -31,6 +31,7 @@ from app.services.llm import get_bot_response, get_smart_bot_response
 from app.connectors.avito import avito_connector
 from app.core.config import settings
 from app.db.models import InterviewReminder
+from app.db.models import Dialogue, Candidate, JobContext, Account, AnalyticsEvent
 from sqlalchemy import delete
 from app.utils.pii_masker import extract_and_mask_pii 
 
@@ -807,7 +808,7 @@ class Engine:
                 meta["first_contact_registered"] = True
                 dialogue.metadata_json = meta
             # Получаем библиотеку промптов из базы знаний
-            prompt_library = await kb_service.get_prompt_library()
+            prompt_library = await kb_service.get_library()
             # === 7. СБОРКА ПРОМПТА ===
             # Ищем описание вакансии в базе знаний (или берем из БД)
             vacancy_title = dialogue.vacancy.title if dialogue.vacancy else "Вакансия"
