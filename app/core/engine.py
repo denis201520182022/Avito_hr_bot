@@ -264,13 +264,18 @@ class Engine:
             except (ValueError, TypeError):
                 pass # Если LLM вернула невалидный возраст, просто игнорируем его
 
-        # --- Критерий 2: Гражданство и Патент ---
-        citizenship = str(profile.get("citizenship", "")).lower()
-        has_patent = str(profile.get("has_patent", "")).lower()
+        # --- Критерий 2: Гражданство и Патент (Уточненная логика) ---
+        citizenship = str(profile.get("citizenship", "")).strip().lower()
+        has_patent = str(profile.get("has_patent", "")).strip().lower()
         
-        # Проверяем, что гражданство не РФ (учитываем разные написания)
+        # Проверяем, является ли гражданство РФ (учитываем разные написания)
         is_rf = any(x in citizenship for x in ["россия", "рф", "российская", "russia"])
 
+        # Отказ только если:
+        # 1. Гражданство УКАЗАНО (citizenship is not empty)
+        # 2. И это НЕ РФ (not is_rf)
+        # 3. И патент НЕ "да" (has_patent != "да")
+        
         if citizenship and not is_rf:
             if has_patent != "да":
                 return False, "non_rf_no_patent"
