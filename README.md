@@ -355,3 +355,5 @@ tail -f logs/tg_worker.log
 
 
 docker logs -f avito_hr_bot
+
+tail -f logs/*.log

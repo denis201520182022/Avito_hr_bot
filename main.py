@@ -84,17 +84,17 @@ async def avito_webhook_handler(
         return Response(status_code=200)
 
     # 2. Проверка безопасности (X-Secret)
-    expected_secret = os.getenv("AVITO_WEBHOOK_SECRET")
-    if expected_secret and x_secret != expected_secret:
-        error_msg = f"⚠️ Попытка взлома или ошибка настроек! Неверный X-Secret на вебхуке Авито от IP: {request.client.host}"
+    # --- ИСПРАВЛЕННАЯ ПРОВЕРКА БЕЗОПАСНОСТИ ---
+    # В Messenger API v3 заголовок X-Secret не приходит.
+    # Поэтому мы проверяем его ТОЛЬКО если он был передан.
+    expected_secret = settings.AVITO_WEBHOOK_SECRET
+    
+    if x_secret and expected_secret and x_secret != expected_secret:
+        error_msg = f"⚠️ Ошибка настроек! Неверный X-Secret от IP: {request.client.host}"
         logger.warning(error_msg)
-        
-        await mq.publish("tg_alerts", {
-            "type": "system", 
-            "text": error_msg,
-            "alert_type": "admin_only"
-        })
+        await mq.publish("tg_alerts", {"type": "system", "text": error_msg})
         return Response(status_code=403)
+    # ------------------------------------------
 
     # 3. Определяем владельца (наш account)
     # В Messenger API v3 поле 'user_id' — это ID нашего кабинета (рекрутера)
