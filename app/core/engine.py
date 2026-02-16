@@ -1626,15 +1626,26 @@ class Engine:
                     )
                     
                     
-                    db.add(AnalyticsEvent(
-                        dialogue_id=dialogue.id,
-                        account_id=dialogue.account_id,
-                        event_type='rejected_by_bot',
-                        event_data={
-                            "reason": "eligibility_failed",
-                            "details": {"age": age, "cit": citizenship, "patent": has_patent, "crim": criminal}
-                        }
-                    ))
+                    # ИСПРАВЛЕНИЕ: Проверка на существование записи перед добавлением
+                    existing_rejected_event = await db.scalar(
+                        select(AnalyticsEvent)
+                        .filter(AnalyticsEvent.dialogue_id == dialogue.id)
+                        .filter(AnalyticsEvent.event_type == 'rejected_by_bot')
+                    )
+
+                    if not existing_rejected_event:
+                        db.add(AnalyticsEvent(
+                            dialogue_id=dialogue.id,
+                            account_id=dialogue.account_id,
+                            event_type='rejected_by_bot',
+                            event_data={
+                                "reason": "eligibility_failed",
+                                "details": {"age": age, "cit": citizenship, "patent": has_patent, "crim": criminal}
+                            }
+                        ))
+                        ctx_logger.info(f"✅ Записано событие 'rejected_by_bot' для диалога {dialogue.id}.")
+                    else:
+                        ctx_logger.debug(f"⚠️ Событие 'rejected_by_bot' для диалога {dialogue.id} уже существует. Пропускаю запись.")
                     # Продолжаем выполнение, чтобы бот отправил этот текст и сохранил историю
                 
 

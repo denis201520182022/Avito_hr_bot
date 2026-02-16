@@ -360,3 +360,10 @@ tail -f logs/*.log
 
 docker compose exec rabbitmq rabbitmqctl purge_queue engine_tasks
 docker compose exec redis redis-cli FLUSHALL
+
+
+
+
+{
+  "tg_chat_id": "-5281527918"
+}
