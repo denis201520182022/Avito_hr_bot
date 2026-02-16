@@ -22,9 +22,9 @@ from app.core.config import settings
 
 
 
-SMART_MODEL=settings.llm.smart_model,
-MAIN_MODEL=settings.llm.main_model,
-MAX_TOKENS=settings.llm.max_tokens,
+SMART_MODEL=settings.llm.smart_model
+MAIN_MODEL=settings.llm.main_model
+MAX_TOKENS=settings.llm.max_tokens
 TEMPERATURE=settings.llm.temperature
 request_timeout=settings.llm.request_timeout
 
