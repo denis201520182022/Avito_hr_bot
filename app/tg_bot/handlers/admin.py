@@ -16,7 +16,7 @@ from aiogram.types import BufferedInputFile
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.db.models import TelegramUser, Account, AppSettings, Dialogue
-from tg_bot.filters import AdminFilter
+from app.tg_bot.filters import AdminFilter
 from app.tg_bot.keyboards import (
     create_management_keyboard,
     role_choice_keyboard,

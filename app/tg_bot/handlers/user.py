@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import AppSettings
-from tg_bot.filters import AdminFilter
+from app.tg_bot.filters import AdminFilter
 
 router = Router()
 
