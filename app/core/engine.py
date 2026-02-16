@@ -1017,7 +1017,7 @@ class Engine:
 
                 # Входим, если есть дата в JSON или обсуждение времени в тексте
                 if interview_date or has_time_keywords:
-                    
+                    ctx_logger.info("Есть дата или маркеры")
                     # --- 12.1 УМНЫЙ АУДИТ ДАТЫ (Smart Model) ---
 
                     # Берем сохраненную дату из метаданных (аналог interview_datetime_utc в HH)
@@ -1038,7 +1038,7 @@ class Engine:
                         calendar_ctx = self._generate_calendar_context_2() 
                         
                         verified_date, audit_reason = await self._verify_date_audit(db, dialogue, interview_date, full_hist, calendar_ctx, ctx_logger.extra) 
-
+                        ctx_logger.info(verified_date, ' ОБЪЯСНЕНИЕ МОДЕЛИ ', audit_reason)
                         # Если аудитор не согласен
                         if verified_date != interview_date and verified_date != "none":
                             ctx_logger.warning(f"🚨 ГАЛЛЮЦИНАЦИЯ ДАТЫ! LLM: {interview_date}, Аудитор: {verified_date}")
