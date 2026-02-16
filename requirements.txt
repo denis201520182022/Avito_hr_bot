@@ -11,6 +11,8 @@ openai
 alembic
 psycopg2-binary
 python-dotenv
-psycopg2-binary
 redis
 tenacity
+aiogram
+google-auth
+google-api-python-client
