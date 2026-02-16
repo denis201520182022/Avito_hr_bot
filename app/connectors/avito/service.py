@@ -147,6 +147,20 @@ class AvitoConnectorService:
             msg_val = payload.get("payload", {}).get("value", {})
             external_chat_id = msg_val.get("chat_id")
             item_id = msg_val.get("item_id")
+
+            # --- ИСПРАВЛЕНИЕ ДЛЯ ИГНОРИРОВАНИЯ СОБСТВЕННЫХ СООБЩЕНИЙ ---
+            webhook_author_id = msg_val.get("author_id")
+            # avito_user_id, который приходит в raw_data для webhooks,
+            # это и есть user_id из payload.value.user_id - ID аккаунта бота.
+            
+            if str(webhook_author_id) == str(avito_user_id):
+                logger.info(
+                    f"🚫 Игнорируем эхо-сообщение от бота в чате {external_chat_id} "
+                    f"(author_id: {webhook_author_id} == bot_user_id: {avito_user_id})"
+                )
+                await db.commit() # Если здесь были какие-то изменения до проверки, нужно их сохранить
+                return # Прекращаем обработку этого события, это сообщение от самого себя
+            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
         elif source == "avito_poller":
             contacts = payload.get("contacts", {})
             external_chat_id = contacts.get("chat", {}).get("value")
