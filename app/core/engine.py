@@ -13,9 +13,10 @@ from app.db.models import Dialogue, Candidate, JobContext, Account, LlmLog, Anal
 from app.core.rabbitmq import mq
 from typing import Dict, Any, List, Optional
 from decimal import Decimal
-
+from app.db.models import InterviewReminder, InterviewFollowup
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
+from app.services.sheets import sheets_service
 from app.connectors.avito.client import avito
 from sqlalchemy.ext.asyncio import AsyncSession
 from decimal import Decimal
@@ -33,6 +34,9 @@ from app.core.config import settings
 from app.db.models import InterviewReminder
 from app.db.models import LlmLog
 from app.db.models import Dialogue, Candidate, JobContext, Account, AnalyticsEvent
+from sqlalchemy import delete
+from app.core.config import settings
+from app.db.models import InterviewReminder
 from sqlalchemy import delete
 from app.utils.pii_masker import extract_and_mask_pii 
 
@@ -487,9 +491,7 @@ class Engine:
         """
         Универсально создает любое количество напоминаний из конфига.
         """
-        from app.core.config import settings
-        from app.db.models import InterviewReminder
-        from sqlalchemy import delete
+        
 
         if not settings.reminders.interview.enabled:
             return
@@ -1092,7 +1094,7 @@ class Engine:
                         current_hour = now_msk.hour
 
                         # 2. Запрашиваем РЕАЛЬНЫЕ свободные слоты из Google Sheets
-                        from app.services.sheets import sheets_service
+                        
                         available_slots = await sheets_service.get_available_slots(interview_date)
 
                         # 3. Применяем фильтрацию для "Сегодня" (как в HH)
@@ -1623,8 +1625,7 @@ class Engine:
                         "с Вами свяжутся в течение трёх рабочих дней."
                     )
                     
-                    # Аналитика
-                    from app.db.models import AnalyticsEvent
+                    
                     db.add(AnalyticsEvent(
                         dialogue_id=dialogue.id,
                         account_id=dialogue.account_id,
@@ -1647,7 +1648,7 @@ class Engine:
                 if not meta.get("call_later_flag"):
                     ctx_logger.info(f"[{dialogue.external_chat_id}] Кандидат попросил связаться позже. Фиксируем.")
                     
-                    from app.db.models import AnalyticsEvent
+                    
                     db.add(AnalyticsEvent(
                         dialogue_id=dialogue.id,
                         account_id=dialogue.account_id,
@@ -1689,7 +1690,7 @@ class Engine:
                             })
                             
                             # Аналитика
-                            from app.db.models import AnalyticsEvent
+                            
                             db.add(AnalyticsEvent(
                                 dialogue_id=dialogue.id,
                                 account_id=dialogue.account_id,
@@ -1751,7 +1752,7 @@ class Engine:
                 })
                 
                 # Аналитика
-                from app.db.models import AnalyticsEvent
+                
                 db.add(AnalyticsEvent(
                     dialogue_id=dialogue.id,
                     account_id=dialogue.account_id,
@@ -1853,7 +1854,7 @@ class Engine:
 
                 # --- 16.2 ОТМЕНА НАПОМИНАНИЙ ПРИ ОТКАЗЕ ---
                 # Если диалог закрыт (отказ), все будущие напоминалки и дожимы больше не нужны
-                from app.db.models import InterviewReminder, InterviewFollowup
+                
                 
                 # Отменяем напоминания
                 await db.execute(
