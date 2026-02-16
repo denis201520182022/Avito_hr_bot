@@ -253,24 +253,32 @@ class Engine:
     def _check_eligibility(self, profile: dict) -> tuple[bool, str | None]:
         """
         Возвращает (True, None) если подходит, или (False, "reason") если отказ.
+        Проверка строго по 3 критериям.
         """
-        # 1. Проверка возраста (если он уже есть в профиле)
-        age = profile.get("age")
-        if age is not None:
-            if not (30 <= int(age) <= 55):
-                return False, f"age_out_of_range_{age}"
+        # --- Критерий 1: Возраст (30-55) ---
+        age_str = profile.get("age")
+        if age_str is not None:
+            try:
+                age = int(age_str)
+                if not (30 <= age <= 55):
+                    return False, f"age_out_of_range_{age}"
+            except (ValueError, TypeError):
+                pass # Если LLM вернула невалидный возраст, просто игнорируем его
 
-        # 2. Проверка гражданства и патента
-        citizenship = str(profile.get("citizenship", "")).upper()
+        # --- Критерий 2: Гражданство и Патент ---
+        citizenship = str(profile.get("citizenship", "")).lower()
         has_patent = str(profile.get("has_patent", "")).lower()
-        if citizenship != "" and citizenship != "РФ":
-            if has_patent == "нет":
-                return False, "foreigner_no_patent"
+        
+        # Проверяем, что гражданство не РФ (учитываем разные написания)
+        is_rf = any(x in citizenship for x in ["россия", "рф", "российская", "russia"])
 
-        # 3. Проверка судимости
-        criminal = str(profile.get("criminal_record", "")).lower()
-        violent_keywords = ["убийство", "насилие", "разбой", "тяжк", "изнасил", "педофил", "личности"]
-        if any(word in criminal for word in violent_keywords):
+        if citizenship and not is_rf:
+            if has_patent != "да":
+                return False, "non_rf_no_patent"
+
+        # --- Критерий 3: Судимость (Проверяем маркер "violent") ---
+        criminal_record = str(profile.get("criminal_record", "")).lower()
+        if criminal_record == "violent":
             return False, "violent_criminal_record"
 
         return True, None
@@ -1413,15 +1421,25 @@ class Engine:
                 profile = dialogue.candidate.profile_data or {}
                 missing_fields = []
                 
-                if not dialogue.candidate.full_name: missing_fields.append("ФИО")
+                # Базовые поля
+               
                 if not dialogue.candidate.phone_number: missing_fields.append("Номер телефона")
-                if not profile.get("city"): missing_fields.append("Город проживания")
                 if not profile.get("age"): missing_fields.append("Возраст")
                 if not profile.get("citizenship"): missing_fields.append("Гражданство")
                 
+                # --- ДОБАВЛЕННЫЕ ПРОВЕРКИ ---
+                if not profile.get("experience"): missing_fields.append("Опыт работы")
+                if not profile.get("readiness_date"): missing_fields.append("Готовность выйти на работу")
+                if not profile.get("has_medbook"): missing_fields.append("Наличие медкнижки")
+                if not profile.get("criminal_record"): missing_fields.append("Информация о судимости")
+                # ----------------------------
+
                 # Если иностранец — проверяем патент
                 citizenship = str(profile.get("citizenship", "")).upper()
-                if citizenship != "РФ" and not profile.get("has_patent"):
+                # Проверка не РФ (учитываем разные написания)
+                is_rf = any(x in citizenship.lower() for x in ["россия", "рф", "российская", "russia"])
+                
+                if citizenship and not is_rf and not profile.get("has_patent"):
                     missing_fields.append("Наличие патента")
 
                 if missing_fields:
@@ -1544,34 +1562,15 @@ class Engine:
                     # В случае ошибки LLM аудита — не рискуем, возвращаемся
                     return
 
+
                     # === 14.4 ПРИНЯТИЕ РЕШЕНИЯ (ELIGIBILITY) ===
                 ctx_logger.info(f"[{dialogue.external_chat_id}] Запуск проверки критериев квалификации.")
 
                 profile = dialogue.candidate.profile_data or {}
-                
-                # 1. Возраст: от 30 до 55 лет включительно
-                age = int(profile.get("age", 0))
-                age_ok = (30 <= age <= 55)
-                
-                # 2. Гражданство: любое, но для иностранцев обязателен патент
-                citizenship = str(profile.get("citizenship", "")).upper()
-                has_patent = str(profile.get("has_patent", "")).lower() == "да"
-                
-                # Если РФ — ок, если не РФ — нужен патент
-                if citizenship == "РФ":
-                    citizenship_ok = True
-                else:
-                    citizenship_ok = has_patent
-
-                # 3. Судимость: недопустима по преступлениям против личности
-                criminal = str(profile.get("criminal_record", "")).lower()
-                violent_keywords = ["убийство", "насилие", "разбой", "тяжк", "изнасил", "педофил", "личности"]
-                
-                # Если в тексте про судимость найдены опасные слова — отказ
-                criminal_ok = not any(word in criminal for word in violent_keywords)
+                is_ok, reason = self._check_eligibility(profile)
 
                 # --- ИТОГОВОЕ РЕШЕНИЕ ---
-                if age_ok and citizenship_ok and criminal_ok:
+                if is_ok:
                     # --- СЦЕНАРИЙ 1: ПОДХОДИТ (Начинаем запись) ---
                     ctx_logger.info(
                         f"[{dialogue.external_chat_id}] Кандидат прошел проверку. Запуск автоматической записи.",
