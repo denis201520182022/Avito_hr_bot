@@ -336,7 +336,7 @@ async def send_hallucination_alert(
 
 
 
-docker-compose up -d --build
+docker compose up -d --build
 
 docker logs avito_hr_bot
 
@@ -357,3 +357,6 @@ tail -f logs/tg_worker.log
 docker logs -f avito_hr_bot
 
 tail -f logs/*.log
+
+docker compose exec rabbitmq rabbitmqctl purge_queue engine_tasks
+docker compose exec redis redis-cli FLUSHALL

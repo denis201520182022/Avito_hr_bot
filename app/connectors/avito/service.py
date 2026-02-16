@@ -498,7 +498,7 @@ class AvitoConnectorService:
                     changed = True
             
             if changed:
-                new_history.sort(key=lambda x: x.get("timestamp_utc"))
+                new_history.sort(key=lambda x: x.get("timestamp_utc") or "0000-01-01T00:00:00+00:00")
                 dialogue.history = new_history
                 dialogue.last_message_at = datetime.datetime.now(datetime.timezone.utc)
                 
