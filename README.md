@@ -339,3 +339,18 @@ async def send_hallucination_alert(
 docker-compose up -d --build
 
 docker logs avito_hr_bot
+
+
+tail -f logs/fastapi.log
+
+tail -f logs/engine.log
+tail -n 20 logs/tg_worker_err.log
+
+tail -f logs/connector.log
+tail -n 20 logs/engine_err.log
+tail -n 20 logs/scheduler_err.log
+tail -f logs/tg_worker.log
+
+
+
+docker logs -f avito_hr_bot

@@ -6,7 +6,7 @@ import signal
 from sqlalchemy import select, and_
 from app.db.models import Dialogue, AnalyticsEvent
 from zoneinfo import ZoneInfo
-from app.services.avito_search import avito_search_service
+from app.connectors.avito.avito_search import avito_search_service
 from app.core.config import settings
 from app.core.rabbitmq import mq
 from app.db.session import AsyncSessionLocal, engine

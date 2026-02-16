@@ -26,13 +26,13 @@ features:
 
 # База знаний (Google Docs)
 knowledge_base:
-  prompt_doc_url: "https://docs.google.com/document/d/ВАШ_ID/edit"
+  prompt_doc_url: "https://docs.google.com/document/d/1dtTCIwrTJC4LLN7KsfQ0afWQGZIH56dO9bDlYkfGIkw/edit"
   credentials_json: "credentials.json"
   cache_ttl: 300 # 5 минут в редисе
 
 # Работа с таблицами (Google Sheets)
 google_sheets:
-  spreadsheet_url: "https://docs.google.com/spreadsheets/d/ВАШ_ID/edit"
+  spreadsheet_url: "https://docs.google.com/spreadsheets/d/1njb64bZ2mT0S7lQgSGFRN5HD9fzMKnJ--6u-kWIC7es/edit"
   calendar_sheet_name: "Calendar"
   candidates_sheet_name: "Candidates"
 

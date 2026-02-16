@@ -16,3 +16,5 @@ tenacity
 aiogram
 google-auth
 google-api-python-client
+pandas
+openpyxl
