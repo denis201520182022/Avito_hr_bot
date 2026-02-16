@@ -79,44 +79,53 @@ async def avito_webhook_handler(
     except Exception:
         return Response(status_code=400)
 
-    # 1. Проверка на пустой запрос (Авито иногда шлет для проверки связи)
+    # 1. Проверка на пустой запрос
     if not payload:
         return Response(status_code=200)
 
     # 2. Проверка безопасности (X-Secret)
-    # --- ИСПРАВЛЕННАЯ ПРОВЕРКА БЕЗОПАСНОСТИ ---
-    # В Messenger API v3 заголовок X-Secret не приходит.
-    # Поэтому мы проверяем его ТОЛЬКО если он был передан.
     expected_secret = settings.AVITO_WEBHOOK_SECRET
-    
     if x_secret and expected_secret and x_secret != expected_secret:
         error_msg = f"⚠️ Ошибка настроек! Неверный X-Secret от IP: {request.client.host}"
         logger.warning(error_msg)
         await mq.publish("tg_alerts", {"type": "system", "text": error_msg})
         return Response(status_code=403)
-    # ------------------------------------------
 
-    # 3. Определяем владельца (наш account)
-    # В Messenger API v3 поле 'user_id' — это ID нашего кабинета (рекрутера)
-    avito_user_id = payload.get("user_id")
+    # 3. ОПРЕДЕЛЯЕМ ВЛАДЕЛЬЦА (Наш account)
+    # В Messenger API v3 user_id лежит по пути: payload -> value -> user_id
+    # Используем безопасный get(), чтобы не упасть с ошибкой, если структура изменится
+    inner_payload = payload.get("payload", {})
+    inner_value = inner_payload.get("value", {})
+    avito_user_id = inner_value.get("user_id")
 
+    # Резервный вариант: если Авито пришлет ID в корне (как в старых версиях)
+    if not avito_user_id:
+        avito_user_id = payload.get("user_id")
+
+    # 4. Отправляем событие в RabbitMQ
     try:
-        # 4. Отправляем событие в RabbitMQ
+        # Важно: приводим к str, так как в БД мы ищем через .astext (строковое сравнение)
+        formatted_user_id = str(avito_user_id) if avito_user_id else None
+        
         await mq.publish("avito_inbound", {
             "source": "avito_webhook",
             "type": "new_message",
-            "avito_user_id": str(avito_user_id) if avito_user_id else None,
+            "avito_user_id": formatted_user_id,
             "payload": payload
         })
+        
+        # Лог для отладки (потом можно убрать)
+        if formatted_user_id:
+            logger.info(f"✅ Вебхук принят для avito_user_id: {formatted_user_id}")
+        else:
+            logger.warning(f"❓ Получен вебхук без user_id. Payload: {payload}")
+
     except Exception as e:
         error_msg = f"❌ ПОТЕРЯ ДАННЫХ: Не удалось записать вебхук Авито в очередь!\n{e}"
         logger.error(error_msg)
-        
-        # Пытаемся отправить алерт через другую очередь
         await mq.publish("tg_alerts", {"type": "system", "text": error_msg})
-        return Response(status_code=500) # Сообщаем Авито, что мы не приняли данные
+        return Response(status_code=500)
 
-    # Авито требует быстрый ответ 200 OK
     return Response(status_code=200)
 
 @app.get("/health")
