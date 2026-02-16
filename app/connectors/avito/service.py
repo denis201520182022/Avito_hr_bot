@@ -142,6 +142,7 @@ class AvitoConnectorService:
         resume_id = None
         item_id = None
 
+        # 1. Извлекаем базовые ID из разных источников
         if source == "avito_webhook":
             msg_val = payload.get("payload", {}).get("value", {})
             external_chat_id = msg_val.get("chat_id")
@@ -152,57 +153,57 @@ class AvitoConnectorService:
             resume_id = str(payload.get("applicant", {}).get("resume_id"))
             item_id = payload.get("vacancy_id")
         elif source == "avito_search_found":
-            # Данные напрямую из нашего сервиса поиска
             external_chat_id = raw_data.get("chat_id")
             resume_id = raw_data.get("resume_id")
             item_id = raw_data.get("vacancy_id")
 
         async with AsyncSessionLocal() as db:
+            # Находим наш аккаунт
             if source == "avito_webhook":
                 account = await db.scalar(select(Account).filter(Account.auth_data['user_id'].astext == str(avito_user_id)))
             else:
                 account = await db.get(Account, account_id)
 
             if not account:
-                logger.error(f"❌ Аккаунт не найден.")
+                logger.error(f"❌ Аккаунт не найден (ID: {avito_user_id})")
                 return
 
-            # Проверка дубля по resume_id (на всякий случай)
-            if resume_id:
-                stmt_duplicate = select(Dialogue).join(Candidate).where(Candidate.platform_user_id == resume_id)
-                if await db.scalar(stmt_duplicate):
-                    logger.info(f"⏭️ Резюме {resume_id} уже в работе. Пропуск.")
-                    return
-
+            # Ищем существующий диалог
             dialogue = await db.scalar(select(Dialogue).filter_by(external_chat_id=external_chat_id))
 
             if not dialogue:
+                # --- ЛОГИКА ОБХОДА ДЛЯ ОБЫЧНЫХ ОБЪЯВЛЕНИЙ ---
                 if not resume_id:
                     try:
+                        # Пытаемся найти через Job API (для вакансий)
                         resume_id = await self._fetch_resume_id_by_chat_id(account, db, external_chat_id)
                     except Exception as e:
-                        logger.error(f"🚫 Ошибка поиска resume_id: {e}")
-                        return
+                        # ЕСЛИ НЕ НАШЛИ (это обычное объявление), создаем временный ID
+                        logger.warning(f"ℹ️ Это не отклик на вакансию ({e}). Создаю тестового кандидата.")
+                        resume_id = f"test_guest_{external_chat_id[-8:]}"
 
+                # Ищем или создаем кандидата
                 candidate = await db.scalar(select(Candidate).filter_by(platform_user_id=resume_id))
                 if not candidate:
-                    candidate = Candidate(platform_user_id=resume_id, profile_data={})
+                    candidate = Candidate(platform_user_id=resume_id, profile_data={"note": "Created from direct chat"})
                     db.add(candidate)
                     await db.flush()
 
-                # Разовое обогащение из резюме
+                # Попытка обогатить данными (пропустит, если это не резюме)
                 try:
-                    resume_data = await avito.get_resume_details(account, db, resume_id)
-                    self._enrich_from_resume(candidate, resume_data)
-                except Exception as e:
-                    logger.warning(f"⚠️ Ошибка Resume API: {e}")
+                    if not resume_id.startswith("test_guest_"):
+                        resume_data = await avito.get_resume_details(account, db, resume_id)
+                        self._enrich_from_resume(candidate, resume_data)
+                except: pass
 
-                # Получаем вакансию (JobContext)
-                if source == "avito_search_found":
-                    job_context = await db.get(JobContext, item_id)
-                else:
-                    job_context = await self._sync_vacancy(account, db, item_id)
-                
+                # Получаем вакансию (если есть)
+                job_context = None
+                if item_id:
+                    try:
+                        job_context = await self._sync_vacancy(account, db, item_id)
+                    except:
+                        logger.info(f"ℹ️ Не удалось синхронизировать вакансию для item {item_id}, продолжаем без неё.")
+
                 # Создаем диалог
                 dialogue = await self._sync_dialogue_and_billing(
                     account, candidate, job_context, external_chat_id, db, 
@@ -210,18 +211,15 @@ class AvitoConnectorService:
                     trigger_source=source
                 )
             else:
+                # Если диалог уже есть, просто обновляем историю
                 await self._update_history_only(dialogue, account, external_chat_id, db)
 
-            # --- ВОТ ЗДЕСЬ ДОБАВЛЯЕМ ФИЛЬТР ---
+            # 2. Отправка в Engine (мозги)
             if dialogue:
-                # Список "терминальных" статусов, при которых бот должен молчать
                 TERMINAL_STATUSES = ['rejected', 'closed']
-                
                 if dialogue.status in TERMINAL_STATUSES:
-                    logger.info(f"🤐 Чат {external_chat_id} в статусе {dialogue.status}. История обновлена, ответ бота не требуется.")
+                    logger.info(f"🤐 Чат {external_chat_id} в статусе {dialogue.status}. Молчим.")
                 else:
-                    # Только если статус активный (new, in_progress, timed_out), 
-                    # запускаем накопление сообщений и отправку в Engine
                     await self._accumulate_and_dispatch(dialogue, dialogue.vacancy, source)
             
             await db.commit()
