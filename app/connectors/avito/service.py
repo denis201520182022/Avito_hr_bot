@@ -260,25 +260,54 @@ class AvitoConnectorService:
 
     async def _fetch_resume_id_by_chat_id(self, account: Account, db: AsyncSession, chat_id: str) -> str:
         """
-        Метод-мост: находит resume_id через Job API, используя фильтр chatId
+        Метод-мост: находит resume_id через Job API, используя фильтр chatId.
+        Теперь с обязательным параметром updatedAtFrom.
         """
-        # 1. Получаем ID отклика по chatId (Скриншот 2)
-        resp_ids = await avito._request("GET", "/job/v1/applications/get_ids", account, db, params={"chatId": chat_id})
+        # Определяем дату, начиная с которой искать (например, за последние 30 дней)
+        # Этого достаточно, чтобы найти активный отклик.
+        date_from = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+
+        params = {
+            "chatId": chat_id,
+            "updatedAtFrom": date_from  # <--- ТЕПЕРЬ ОБЯЗАТЕЛЬНО
+        }
+
+        # 1. Получаем ID отклика по chatId
+        logger.info(f"🔍 Запрос в Job API для поиска отклика по chatId: {chat_id}")
+        resp_ids = await avito._request(
+            "GET", 
+            "/job/v1/applications/get_ids", 
+            account, 
+            db, 
+            params=params
+        )
+        
         apps = resp_ids.get("applications", [])
         
         if not apps:
-            raise ValueError(f"Отклик для чата {chat_id} не найден в Job API")
+            raise ValueError(f"Отклик для чата {chat_id} не найден в Job API (искали с {date_from})")
 
         app_id = apps[0]["id"]
+        logger.info(f"✅ Найден ID отклика: {app_id}, запрашиваем детали...")
         
-        # 2. Получаем детали отклика (Скриншот 1)
-        details = await avito._request("POST", "/job/v1/applications/get_by_ids", account, db, json={"ids": [app_id]})
+        # 2. Получаем детали отклика, чтобы вытащить resume_id
+        details = await avito._request(
+            "POST", 
+            "/job/v1/applications/get_by_ids", 
+            account, 
+            db, 
+            json={"ids": [app_id]}
+        )
+        
         app_details = details.get("applications", [])
         
         if not app_details:
             raise ValueError(f"Не удалось получить детали отклика {app_id}")
 
-        return str(app_details[0].get("applicant", {}).get("resume_id"))
+        resume_id = str(app_details[0].get("applicant", {}).get("resume_id"))
+        logger.info(f"✅ Получен resume_id: {resume_id}")
+        
+        return resume_id
 
     async def _sync_vacancy(self, account: Account, db: AsyncSession, item_id: Any) -> Optional[JobContext]:
         if not item_id:
