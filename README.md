@@ -347,6 +347,7 @@ tail -f logs/engine.log
 tail -n 20 logs/tg_worker_err.log
 
 tail -f logs/connector.log
+tail -f logs/connector_err.log
 tail -n 20 logs/engine_err.log
 tail -n 20 logs/scheduler_err.log
 tail -f logs/tg_worker.log

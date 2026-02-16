@@ -87,15 +87,12 @@ class Settings(BaseModel):
     messages: MessagesConfig # НОВЫЙ БЛОК
 
     # Параметры из .env
-    database_url: str = Field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
-    rabbitmq_url: str = Field(default_factory=lambda: os.getenv("RABBITMQ_URL", ""))
-    redis_url: str = Field(default_factory=lambda: os.getenv("REDIS_URL", ""))
-    openai_api_key: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY", "")) # Добавил для полноты
-    telegram_bot_token: str = Field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", "")) # Добавил для полноты
-    avito_webhook_secret: str = Field(default_factory=lambda: os.getenv("AVITO_WEBHOOK_SECRET", "")) # Добавил для полноты
-    # Обрати внимание: GLOBAL_LLM_CONCURRENCY и прокси теперь берутся напрямую из ENV,
-    # как мы решили в llm.py, поэтому их здесь нет.
-    
+    DATABASE_URL: str = Field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
+    RABBITMQ_URL: str = Field(default_factory=lambda: os.getenv("RABBITMQ_URL", ""))
+    REDIS_URL: str = Field(default_factory=lambda: os.getenv("REDIS_URL", ""))
+    TELEGRAM_BOT_TOKEN: str = Field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
+        # как мы решили в llm.py, поэтому их здесь нет.
+        
     # WEBHOOK_BASE_URL также берется напрямую из ENV в main.py, как и раньше.
 
     @classmethod
