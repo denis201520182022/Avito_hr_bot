@@ -31,6 +31,7 @@ from app.services.llm import get_bot_response, get_smart_bot_response
 from app.connectors.avito import avito_connector
 from app.core.config import settings
 from app.db.models import InterviewReminder
+from app.db.models import LlmLog
 from app.db.models import Dialogue, Candidate, JobContext, Account, AnalyticsEvent
 from sqlalchemy import delete
 from app.utils.pii_masker import extract_and_mask_pii 
@@ -113,72 +114,72 @@ class Engine:
         Универсальная функция для подсчета токенов и стоимости.
         Полностью соответствует логике HH, но пишет статистику в JSONB (так как в модели Avito нет отдельных колонок).
         """
-        async with AsyncSessionLocal() as db:
-            try:
-                # 1. Выбор тарифа (Копия из HH)
-                MODEL_PRICING = {
-                    "gpt-4o-mini": {"input": 0.150, "output": 0.600},
-                    "gpt-4o": {"input": 2.500, "output": 10.000}
-                }
-                pricing = MODEL_PRICING.get(model_name, MODEL_PRICING["gpt-4o-mini"])
-                price_input = pricing["input"]
-                price_output = pricing["output"]
+        
+        try:
+            # 1. Выбор тарифа (Копия из HH)
+            MODEL_PRICING = {
+                "gpt-4o-mini": {"input": 0.150, "output": 0.600},
+                "gpt-4o": {"input": 2.500, "output": 10.000}
+            }
+            pricing = MODEL_PRICING.get(model_name, MODEL_PRICING["gpt-4o-mini"])
+            price_input = pricing["input"]
+            price_output = pricing["output"]
 
-                # 2. Извлечение данных
-                stats = usage_stats or {}
-                p_tokens = stats.get('prompt_tokens', 0)
-                c_tokens = stats.get('completion_tokens', 0)
-                cached_tokens = stats.get('cached_tokens', 0)
-                total_tokens = stats.get('total_tokens', 0)
+            # 2. Извлечение данных
+            stats = usage_stats or {}
+            p_tokens = stats.get('prompt_tokens', 0)
+            c_tokens = stats.get('completion_tokens', 0)
+            cached_tokens = stats.get('cached_tokens', 0)
+            total_tokens = stats.get('total_tokens', 0)
 
-                # 3. Расчет стоимости (Логика HH: скидка 50% на кэш)
-                non_cached_input = max(0, p_tokens - cached_tokens)
+            # 3. Расчет стоимости (Логика HH: скидка 50% на кэш)
+            non_cached_input = max(0, p_tokens - cached_tokens)
+            
+            cost_input_regular = (non_cached_input / 1_000_000) * price_input
+            cost_input_cached = (cached_tokens / 1_000_000) * (price_input / 2) 
+            cost_output = (c_tokens / 1_000_000) * price_output
+            
+            # Используем Decimal для точности, как в HH
+            total_call_cost = Decimal(str(cost_input_regular + cost_input_cached + cost_output))
+
+            # 4. Создание записи лога (Таблица LlmLog)
+            # Адаптация: в модели Avito LlmLog поля называются немного иначе, чем в HH
+            
+            usage_log = LlmLog(
+                dialogue_id=dialogue.id,
+                prompt_type=f"{context} ({model_name})", # Аналог dialogue_state_at_call
+                model=model_name,
+                prompt_tokens=p_tokens,
+                completion_tokens=c_tokens,
+                # В модели Avito LlmLog нет колонки cached_tokens, поэтому не пишем её сюда,
+                # но она учтена в стоимости (cost).
+                cost=total_call_cost
+            )
+            db.add(usage_log)
+
+            # 5. Обновление счетчиков диалога (JSONB usage_stats)
+            if total_tokens > 0:
+                # Берем текущий JSON или пустой словарь
+                current_stats = dict(dialogue.usage_stats or {})
                 
-                cost_input_regular = (non_cached_input / 1_000_000) * price_input
-                cost_input_cached = (cached_tokens / 1_000_000) * (price_input / 2) 
-                cost_output = (c_tokens / 1_000_000) * price_output
+                # Извлекаем старую стоимость, конвертируем в Decimal для сложения
+                prev_cost = Decimal(str(current_stats.get("total_cost", 0)))
+                new_total_cost = prev_cost + total_call_cost
                 
-                # Используем Decimal для точности, как в HH
-                total_call_cost = Decimal(str(cost_input_regular + cost_input_cached + cost_output))
+                # Обновляем общие счетчики
+                current_stats["total_cost"] = float(new_total_cost) # JSON не поддерживает Decimal, конвертируем обратно во float
+                current_stats["tokens"] = current_stats.get("tokens", 0) + total_tokens
+                
+                # Сохраняем детализацию (как было в колонках HH бота)
+                current_stats["total_prompt_tokens"] = current_stats.get("total_prompt_tokens", 0) + p_tokens
+                current_stats["total_completion_tokens"] = current_stats.get("total_completion_tokens", 0) + c_tokens
+                current_stats["total_cached_tokens"] = current_stats.get("total_cached_tokens", 0) + cached_tokens
+                
+                dialogue.usage_stats = current_stats
+                
 
-                # 4. Создание записи лога (Таблица LlmLog)
-                # Адаптация: в модели Avito LlmLog поля называются немного иначе, чем в HH
-                from app.db.models import LlmLog
-                usage_log = LlmLog(
-                    dialogue_id=dialogue.id,
-                    prompt_type=f"{context} ({model_name})", # Аналог dialogue_state_at_call
-                    model=model_name,
-                    prompt_tokens=p_tokens,
-                    completion_tokens=c_tokens,
-                    # В модели Avito LlmLog нет колонки cached_tokens, поэтому не пишем её сюда,
-                    # но она учтена в стоимости (cost).
-                    cost=total_call_cost
-                )
-                db.add(usage_log)
-
-                # 5. Обновление счетчиков диалога (JSONB usage_stats)
-                if total_tokens > 0:
-                    # Берем текущий JSON или пустой словарь
-                    current_stats = dict(dialogue.usage_stats or {})
-                    
-                    # Извлекаем старую стоимость, конвертируем в Decimal для сложения
-                    prev_cost = Decimal(str(current_stats.get("total_cost", 0)))
-                    new_total_cost = prev_cost + total_call_cost
-                    
-                    # Обновляем общие счетчики
-                    current_stats["total_cost"] = float(new_total_cost) # JSON не поддерживает Decimal, конвертируем обратно во float
-                    current_stats["tokens"] = current_stats.get("tokens", 0) + total_tokens
-                    
-                    # Сохраняем детализацию (как было в колонках HH бота)
-                    current_stats["total_prompt_tokens"] = current_stats.get("total_prompt_tokens", 0) + p_tokens
-                    current_stats["total_completion_tokens"] = current_stats.get("total_completion_tokens", 0) + c_tokens
-                    current_stats["total_cached_tokens"] = current_stats.get("total_cached_tokens", 0) + cached_tokens
-                    
-                    dialogue.usage_stats = current_stats
-                    await db.commit()
-
-            except Exception as e:
-                logger.error(f"Ошибка при логировании токенов ({context}): {e}")
+        except Exception as e:
+            logger.error(f"Ошибка при логировании токенов ({context}): {e}")
 
     async def _verify_date_audit(self, db: AsyncSession, dialogue: Dialogue, suggested_date: str, history_messages: list, calendar_context: str, log_extra: dict) -> str:
         """
@@ -951,9 +952,39 @@ class Engine:
             }
 
             if new_state not in ALLOWED_STATES:
-                ctx_logger.error(f"CRITICAL: LLM returned invalid state: '{new_state}'")
-                # Для стабильности можно форсировать стейт 'clarifying_anything', но лучше упасть и разобраться
-                raise ValueError(f"Invalid state returned by LLM: {new_state}")
+                ctx_logger.error(
+                    f"CRITICAL: LLM вернула недопустимый стейт: '{new_state}'",
+                    extra={"action": "invalid_state_detected", "invalid_state": new_state}
+                )
+                
+                # 1. Формируем текст замечания для модели
+                hallucination_corr_cmd = {
+                    'message_id': f'sys_state_hallucination_{time.time()}',
+                    'role': 'user',
+                    'content': (
+                        f"[SYSTEM COMMAND] В твоем последнем ответе произошла техническая ошибка: "
+                        f"ты вернул недопустимое состояние (new_state) '{new_state}'. "
+                        f"Такого состояния НЕ СУЩЕСТВУЕТ в твоей инструкции. "
+                        f"Проанализируй диалог заново и выбери корректное состояние СТРОГО из разрешенного списка."
+                    ),
+                    'timestamp_utc': datetime.datetime.now(datetime.timezone.utc).isoformat()
+                }
+
+                # 2. Сохраняем историю и добавляем системную команду в конец
+                # В нашей архитектуре нет pending_messages, команда кладется прямо в историю.
+                dialogue.history = (dialogue.history or []) + user_entries_to_history + [hallucination_corr_cmd]
+                dialogue.last_message_at = datetime.datetime.now(datetime.timezone.utc)
+
+                # 3. Фиксируем изменения в базе
+                await db.commit()
+                
+                # 4. Отправляем задачу на переобработку с новой системной командой
+                await mq.publish("engine_tasks", {"dialogue_id": dialogue.id, "trigger": "state_correction_retry"})
+                
+                ctx_logger.info(f"Отправлено на исправление галлюцинации стейта: {new_state}")
+                return # Обязательно выходим, чтобы текущая обработка прекратилась
+            # --- [END] ВАЛИДАЦИЯ СТАТУСА ---
+
 
             # === 12. ВАЛИДАЦИЯ ДАТЫ И ВРЕМЕНИ (АУДИТ + РЕГЛАМЕНТ + СЛОТЫ) ===
             DATE_CRITICAL_STATES = ['init_scheduling_spb', 'scheduling_spb_day', 'scheduling_spb_time', 'interview_scheduled_spb']
