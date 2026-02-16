@@ -25,7 +25,7 @@ from aiogram.utils.formatting import Text, Bold, Italic
 from app.db.models import AnalyticsEvent
 
 from app.db.models import TelegramUser
-from tg_bot.keyboards import (
+from app.tg_bot.keyboards import (
     user_keyboard, 
     admin_keyboard, 
     stats_main_menu_keyboard, 
