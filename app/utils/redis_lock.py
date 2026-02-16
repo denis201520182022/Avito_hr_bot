@@ -21,7 +21,7 @@ def get_redis_client() -> Redis:
     if _redis_client is None:
         # Берем параметры из твоего центрального конфига
         _redis_client = Redis.from_url(
-            settings.redis_url, 
+            settings.REDIS_URL, 
             decode_responses=True,
             # Добавляем параметры надежности
             socket_timeout=5,

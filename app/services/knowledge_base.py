@@ -22,7 +22,7 @@ class KnowledgeBaseService:
         self.ttl = settings.knowledge_base.cache_ttl
         
         # Инициализация Redis клиента
-        self.redis_client = redis.from_url(settings.redis_url, decode_responses=True)
+        self.redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
         self.cache_key = f"{settings.bot_id}:prompt_library"
 
     def _extract_doc_id(self, url: str) -> str:
