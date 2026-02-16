@@ -312,6 +312,7 @@ class AvitoConnectorService:
             return None
         
         try:
+            # Пытаемся получить данные через Job API
             vac_details = await avito.get_job_details(str(item_id), account, db)
             
             job = await db.scalar(select(JobContext).filter_by(external_id=str(item_id)))
@@ -326,12 +327,14 @@ class AvitoConnectorService:
             await db.flush()
             return job
         except Exception as e:
+            # Если это обычное объявление (не вакансия), API вернет ошибку.
+            # Мы просто логируем это как INFO и возвращаем None, не прерывая работу.
+            logger.info(f"ℹ️ Объявление {item_id} не является вакансией или Job API недоступен. Пропускаем синхронизацию параметров.")
             error_msg = f"⚠️ Ошибка синхронизации вакансии {item_id} для аккаунта {account.name}: {e}"
-            logger.error(error_msg, exc_info=True)
             await mq.publish("tg_alerts", {"type": "system", "text": error_msg})
-            raise e
-            #return await db.scalar(select(JobContext).filter_by(external_id=str(item_id)))
-
+            # Пытаемся найти уже существующую запись в базе, если она была создана ранее
+            return await db.scalar(select(JobContext).filter_by(external_id=str(item_id)))
+        
     
         
     def _enrich_candidate_from_avito_payload(self, candidate: Candidate, payload: dict):

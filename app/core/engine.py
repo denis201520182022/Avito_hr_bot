@@ -229,7 +229,7 @@ class Engine:
                 system_prompt=verify_prompt,
                 dialogue_history=[],
                 user_message=f"ИСТОРИЯ ДИАЛОГА:\n{recent_text}",
-                current_datetime_utc=datetime.datetime.now(datetime.timezone.utc),
+                
                 attempt_tracker=verify_attempts,
                 skip_instructions=True,
                 extra_context=log_extra
@@ -849,7 +849,7 @@ class Engine:
                     system_prompt=final_system_prompt,
                     dialogue_history=history_for_llm,
                     user_message=combined_masked_message,
-                    current_datetime_utc=datetime.datetime.now(datetime.timezone.utc),
+                    
                     attempt_tracker=attempt_tracker,
                     extra_context=ctx_logger.extra 
                 )
@@ -1458,7 +1458,7 @@ class Engine:
                         system_prompt=verification_prompt,
                         dialogue_history=[],
                         user_message=f"ИСТОРИЯ ДИАЛОГА:\n{full_history_text}",
-                        current_datetime_utc=datetime.datetime.now(datetime.timezone.utc),
+                        
                         attempt_tracker=verify_attempts,
                         skip_instructions=True,
                         extra_context=ctx_logger.extra
@@ -1771,7 +1771,7 @@ class Engine:
                             system_prompt=clarification_prompt,
                             dialogue_history=[], 
                             user_message=f"ИСТОРИЯ ДИАЛОГА (последние реплики):\n{recent_context}",
-                            current_datetime_utc=datetime.datetime.now(datetime.timezone.utc),
+                            
                             attempt_tracker=clarification_attempts,
                             skip_instructions=True,
                             extra_context=ctx_logger.extra
