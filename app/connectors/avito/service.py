@@ -8,7 +8,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from sqlalchemy.orm import selectinload
 from app.db.session import AsyncSessionLocal
 from app.db.models import Account, JobContext, Candidate, Dialogue, AppSettings, AnalyticsEvent
 from app.core.rabbitmq import mq
@@ -262,8 +262,12 @@ class AvitoConnectorService:
                 return
 
             # Ищем существующий диалог
-            dialogue = await db.scalar(select(Dialogue).filter_by(external_chat_id=external_chat_id))
-
+            stmt = (
+                select(Dialogue)
+                .options(selectinload(Dialogue.vacancy)) # <-- 2. ВОТ РЕШЕНИЕ
+                .filter_by(external_chat_id=external_chat_id)
+            )
+            dialogue = (await db.execute(stmt)).scalar_one_or_none()
             if not dialogue:
                 # --- ЛОГИКА ОБХОДА ДЛЯ ОБЫЧНЫХ ОБЪЯВЛЕНИЙ ---
                 if not resume_id:

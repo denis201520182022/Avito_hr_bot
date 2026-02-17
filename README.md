@@ -373,7 +373,7 @@ docker compose exec redis redis-cli FLUSHALL
 
 
 Ресетнуть диалог:
-docker exec -it avito_hr_bot python reset_test.py ВСТАВЬ_ТУТ_ID_ЧАТАекстернал
+docker exec -it avito_hr_bot python reset_test.py u2i-NyF0fdvl9bDIzxRgvbA61Q
 
 
 

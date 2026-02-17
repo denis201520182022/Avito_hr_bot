@@ -24,9 +24,12 @@ services:
     ports:
       - "8005:8000"       # FastAPI порт
     depends_on:
-      - rabbitmq
-      - redis
-      - pgbouncer
+      rabbitmq:
+        condition: service_healthy  # Ждать успешного прохождения healthcheck
+      redis:
+        condition: service_healthy  # Ждать готовности Redis
+      pgbouncer:
+        condition: service_started  # PgBouncer просто запущен (или тоже добавьте healthcheck)
     networks:
       - avito_net
 

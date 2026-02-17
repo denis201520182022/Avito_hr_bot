@@ -88,40 +88,50 @@ async def cancel_callback_handler(callback: CallbackQuery, state: FSMContext):
 
 # --- УПРАВЛЕНИЕ БАЛАНСОМ И ТАРИФАМИ ---
 
+
 @router.message(F.text == "⚙️ Баланс и Тариф")
 async def limits_menu(message: Message, session: AsyncSession):
-    # Тянем основные настройки
+    # Тянем настройки
     settings = await session.get(AppSettings, 1)
-    
-    # Тянем квоты поиска для всех аккаунтов
+    if not settings:
+        await message.answer("❌ Не удалось загрузить настройки.")
+        return
+
+    # Тянем квоты поиска (из вашего исходного кода)
     quota_stmt = select(AvitoSearchQuota).join(Account)
     quotas = (await session.execute(quota_stmt)).scalars().all()
-    
+
+    # Извлекаем данные из JSONB словарей (с защитой, если ключей нет)
     stats = settings.stats or {}
     costs = settings.costs or {}
 
-    content_parts = [
-        Bold("📊 Управление балансом:"), "\n",
-        f"Кошелек бота: {settings.balance:.2f} руб.\n\n",
-        Bold("🔎 Лимиты поиска (контакты):"), "\n"
-    ]
-
-    if not quotas:
-        content_parts.append(Italic("Квоты не настроены.\n"))
-    else:
+    # Формируем список для контактов/лимитов
+    quota_lines = []
+    if quotas:
         for q in quotas:
-            content_parts.append(f"- {q.account.name}: {Bold(str(q.remaining_limits))} шт.\n")
+            quota_lines.extend([f"- {q.account.name}: ", Bold(str(q.remaining_limits)), " шт.\n"])
+    else:
+        quota_lines.append(Italic("Квоты не настроены.\n"))
 
-    content_parts.extend([
-        "\n", Bold("💰 Тарифы:"), "\n",
-        f"Новый диалог: {costs.get('dialogue', 0):.2f} руб.\n"
-    ])
+    # Собираем контент в новом формате
+    content = Text(
+        Bold("📊 Управление балансом:"), "\n\n",
+        "Текущий баланс: ", Bold(f"{settings.balance:.2f}"), " руб.\n\n",
+        
+        Bold("📈 История затрат (всего):"), "\n",
+        "- Потрачено на диалоги: ", Bold(f"{stats.get('spent_on_dialogues', 0):.2f}"), " руб.\n"
     
-    content = Text(*content_parts)
-    
-    # В клавиатуру limits_menu_keyboard нужно добавить кнопку с callback_data="set_search_limit"
+        "💰 ", Bold("Тарифы:"), "\n",
+        "Новый диалог: ", Bold(f"{costs.get('dialogue', 0):.2f}"), " руб.\n",
+
+        Bold("🔎 Лимиты поиска (контакты):"), "\n",
+        *quota_lines,
+        "\n",
+        
+        "🔔 Уведомление при балансе < ", Bold(f"{settings.low_balance_threshold:.2f}"), " руб."
+    )
+
     await message.answer(**content.as_kwargs(), reply_markup=limits_menu_keyboard)
-
 @router.callback_query(F.data == "set_limit")
 async def start_set_balance(callback: CallbackQuery, state: FSMContext):
     await state.set_state(SettingsManagement.set_balance)

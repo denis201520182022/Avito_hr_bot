@@ -15,6 +15,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("FastAPI")
 
+# --- ДОБАВЬТЕ ЭТУ СТРОКУ ---
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
