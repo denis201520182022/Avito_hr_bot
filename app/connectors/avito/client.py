@@ -366,5 +366,79 @@ class AvitoClient:
         """Получение контактов резюме, включая chat_id"""
         path = f"/job/v1/resumes/{resume_id}/contacts/"
         return await self._request("GET", path, account, db)
+    
+    async def delete_message(self, account: Account, db: AsyncSession, chat_id: str, message_id: str):
+        """
+        Удаляет сообщение в чате Авито. 
+        Внимание: удалять можно только свои сообщения и не позднее 1 часа с момента отправки.
+        """
+        user_id = account.auth_data.get("user_id")
+        path = f"/messenger/v1/accounts/{user_id}/chats/{chat_id}/messages/{message_id}"
+        
+        try:
+            # Метод POST, тело пустое
+            return await self._request("POST", path, account, db, json={})
+        except Exception as e:
+            # Не бросаем ошибку, так как сообщения старше часа просто не удалятся
+            logger.warning(f"⚠️ Не удалось удалить сообщение {message_id}: {e}")
+            return None
+        
+    # --- ДОБАВИТЬ В AvitoClient ---
+    
+    async def get_item_details(self, item_id: str, account: Account, db: AsyncSession):
+        """
+        Получение данных через Core API (Resources).
+        Работает для обычных объявлений (Услуги, Товары).
+        """
+        # Используем путь, который сработал в curl
+        path = "/core/v1/items"
+        params = {"ids": str(item_id)}
+        
+        try:
+            # Делаем запрос
+            data = await self._request("GET", path, account, db, params=params)
+            
+            # В этом методе данные лежат в resources
+            resources = data.get("resources", [])
+            if not resources:
+                raise ValueError(f"Объявление {item_id} не найдено в API")
+            
+            item = resources[0] # Берем первое из списка
+
+            # Чистим город из адреса (Ставропольский край, Ставрополь... -> Ставрополь)
+            full_address = item.get("address", "")
+            city = "Не указан"
+            if full_address:
+                parts = [p.strip() for p in full_address.split(",")]
+                # Обычно город — это второй элемент после края, либо первый
+                city = parts[1] if len(parts) > 1 else parts[0]
+
+            from dataclasses import dataclass
+            @dataclass
+            class ItemDTO:
+                title: str
+                description: str
+                city: str
+                raw_json: dict
+
+            # Формируем описание из того, что есть (название + цена)
+            price = item.get("price", "Не указана")
+            description = (
+                f"📦 ОБЪЯВЛЕНИЕ: {item.get('title')}\n"
+                f"💰 Цена: {price} руб.\n"
+                f"📍 Адрес: {full_address}\n"
+                f"🔗 Ссылка: {item.get('url')}\n\n"
+                f"⚠️ Описание не получено через API, будет добавлено вручную."
+            )
+
+            return ItemDTO(
+                title=item.get("title", "Объявление"),
+                description=description,
+                city=city,
+                raw_json=item
+            )
+        except Exception as e:
+            logger.error(f"❌ Ошибка Core API для item {item_id}: {e}")
+            raise e
 
 avito = AvitoClient()

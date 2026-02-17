@@ -14,6 +14,13 @@ import io
 import datetime
 from aiogram.types import BufferedInputFile
 from sqlalchemy.orm.attributes import flag_modified
+from app.db.models import (
+    Account, 
+    JobContext, 
+    Candidate, 
+    AvitoSearchQuota, 
+    AvitoSearchStat
+)
 
 from app.db.models import TelegramUser, Account, AppSettings, Dialogue
 from app.tg_bot.filters import AdminFilter
@@ -59,6 +66,7 @@ class AccountManagement(StatesGroup):
 class SettingsManagement(StatesGroup):
     set_balance = State()
     set_cost_dialogue = State()
+    set_search_balance = State()
 
 # --- Обработчики отмены ---
 
@@ -82,32 +90,36 @@ async def cancel_callback_handler(callback: CallbackQuery, state: FSMContext):
 
 @router.message(F.text == "⚙️ Баланс и Тариф")
 async def limits_menu(message: Message, session: AsyncSession):
-    stmt = select(AppSettings).where(AppSettings.id == 1)
-    result = await session.execute(stmt)
-    settings = result.scalar_one_or_none()
+    # Тянем основные настройки
+    settings = await session.get(AppSettings, 1)
     
-    if not settings:
-        await message.answer("❌ Не удалось загрузить настройки (запись id=1 не найдена).")
-        return
-
-    # Извлекаем данные из JSONB
+    # Тянем квоты поиска для всех аккаунтов
+    quota_stmt = select(AvitoSearchQuota).join(Account)
+    quotas = (await session.execute(quota_stmt)).scalars().all()
+    
     stats = settings.stats or {}
     costs = settings.costs or {}
 
-    content = Text(
-        Bold("📊 Управление балансом:"), "\n\n",
-        "Текущий баланс: ", Bold(f"{settings.balance:.2f}"), " руб.\n\n",
-        
-        Bold("📈 Статистика затрат:"), "\n",
-        "- Потрачено на диалоги: ", Bold(f"{stats.get('spent_on_dialogues', 0):.2f}"), " руб.\n",
-        "- Всего потрачено: ", Bold(f"{stats.get('total_spent', 0):.2f}"), " руб.\n\n",
-        
-        "💰 ", Bold("Тарифы:"), "\n",
-        "Новый диалог: ", Bold(f"{costs.get('dialogue', 0):.2f}"), " руб.\n\n",
-        
-        "🔔 Уведомление при балансе < ", Bold(f"{settings.low_balance_threshold:.2f}"), " руб."
-    )
+    content_parts = [
+        Bold("📊 Управление балансом:"), "\n",
+        f"Кошелек бота: {settings.balance:.2f} руб.\n\n",
+        Bold("🔎 Лимиты поиска (контакты):"), "\n"
+    ]
+
+    if not quotas:
+        content_parts.append(Italic("Квоты не настроены.\n"))
+    else:
+        for q in quotas:
+            content_parts.append(f"- {q.account.name}: {Bold(str(q.remaining_limits))} шт.\n")
+
+    content_parts.extend([
+        "\n", Bold("💰 Тарифы:"), "\n",
+        f"Новый диалог: {costs.get('dialogue', 0):.2f} руб.\n"
+    ])
     
+    content = Text(*content_parts)
+    
+    # В клавиатуру limits_menu_keyboard нужно добавить кнопку с callback_data="set_search_limit"
     await message.answer(**content.as_kwargs(), reply_markup=limits_menu_keyboard)
 
 @router.callback_query(F.data == "set_limit")
@@ -166,6 +178,48 @@ async def process_set_cost_dialogue(message: Message, state: FSMContext, session
     except Exception as e:
         logger.error(f"Ошибка при смене тарифа: {e}")
         await message.answer("❌ Ошибка в числе. Попробуйте еще раз.")
+
+
+@router.callback_query(F.data == "set_search_limit")
+async def start_set_search_limit(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(SettingsManagement.set_search_balance)
+    await callback.message.answer(
+        "Введите ID аккаунта и новый лимит через пробел.\n"
+        "Пример: `1 100` (где 1 - ID аккаунта, 100 - количество контактов)",
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+@router.message(SettingsManagement.set_search_balance)
+async def process_set_search_limit(message: Message, state: FSMContext, session: AsyncSession):
+    try:
+        parts = message.text.split()
+        if len(parts) != 2:
+            raise ValueError
+        
+        acc_id, new_limit = int(parts[0]), int(parts[1])
+        
+        # Ищем или создаем запись квоты
+        stmt = select(AvitoSearchQuota).filter_by(account_id=acc_id)
+        quota = await session.execute(stmt)
+        quota = quota.scalar_one_or_none()
+        
+        if not quota:
+            # Если записи еще нет, создаем новую
+            quota = AvitoSearchQuota(account_id=acc_id, remaining_limits=new_limit)
+            session.add(quota)
+        else:
+            quota.remaining_limits = new_limit
+            
+        await session.commit()
+        await state.clear()
+        await message.answer(f"✅ Лимит поиска для аккаунта ID {acc_id} установлен: {new_limit} шт.", reply_markup=admin_keyboard)
+    
+    except (ValueError, IndexError):
+        await message.answer("❌ Неверный формат. Введите `ID ЛИМИТ` (например: `1 50`).")
+    except Exception as e:
+        logger.error(f"Ошибка при установке лимита поиска: {e}")
+        await message.answer("❌ Произошла ошибка. Проверьте ID аккаунта.")
 
 
 # --- 1. УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ---

@@ -121,8 +121,13 @@ async def send_tg_notification(dialogue: Dialogue, candidate: Candidate, vacancy
 
     def esc(text):
         if not text: return "—"
-        return str(text).replace('-', '\-').replace('.', '\.').replace('!', '\!').replace('(', '\(').replace(')', '\)')
-
+        # Список символов, которые ОБЯЗАТЕЛЬНО нужно экранировать в MarkdownV2
+        chars = r"_*[]()~`>#+-=|{}.!"
+        res = str(text)
+        for c in chars:
+            res = res.replace(c, f"\\{c}")
+        return res
+    
     meta = dialogue.metadata_json or {}
     avito_link = f"https://www.avito.ru/profile/messenger/channels/{dialogue.external_chat_id}"
     

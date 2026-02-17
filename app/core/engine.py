@@ -68,6 +68,44 @@ class Engine:
             if not str(content).startswith('[SYSTEM'): # Пропускаем системные команды
                 lines.append(f"{role}: {content}")
         return "\n".join(lines)
+    
+    async def _get_human_slots_block(self) -> str:
+        """Формирует текстовый блок со свободными слотами для промпта."""
+        all_slots = await sheets_service.get_all_slots_map()
+        if not all_slots:
+            return "\n[ИНФОРМАЦИЯ О СЛОТАХ] На данный момент свободных окон в графике нет."
+
+        moscow_tz = ZoneInfo("Europe/Moscow")
+        now_msk = datetime.datetime.now(moscow_tz)
+        today_str = now_msk.strftime("%Y-%m-%d")
+
+        weekdays = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+        months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+
+        lines = ["\n[СПИСОК ДОСТУПНЫХ ОКОН ДЛЯ ЗАПИСИ]:"]
+        
+        # Сортируем даты по порядку
+        for date_iso in sorted(all_slots.keys()):
+            slots = all_slots[date_iso]
+            if not slots:
+                continue
+
+            dt = datetime.datetime.strptime(date_iso, "%Y-%m-%d")
+            
+            # Пропускаем прошедшие дни
+            if dt.date() < now_msk.date():
+                continue
+                
+            # Если день сегодняшний, фильтруем прошедшие часы
+            if date_iso == today_str:
+                slots = [s for s in slots if int(s.split(':')[0]) > now_msk.hour]
+                if not slots:
+                    continue
+
+            human_date = f"{dt.day} {months[dt.month - 1]} ({weekdays[dt.weekday()]})"
+            lines.append(f"• {human_date}: {', '.join(slots)}")
+
+        return "\n".join(lines)
 
     def _validate_age_in_text(self, text: str, suggested_age: Any) -> bool:
         """Проверяет, соответствует ли извлеченный LLM возраст тому, что реально написал пользователь."""
@@ -271,14 +309,15 @@ class Engine:
         # Проверяем, является ли гражданство РФ (учитываем разные написания)
         is_rf = any(x in citizenship for x in ["россия", "рф", "российская", "russia"])
 
-        # Отказ только если:
-        # 1. Гражданство УКАЗАНО (citizenship is not empty)
-        # 2. И это НЕ РФ (not is_rf)
-        # 3. И патент НЕ "да" (has_patent != "да")
-        
+        # Если указано гражданство НЕ РФ
         if citizenship and not is_rf:
-            if has_patent != "да":
+            # ОТКАЗЫВАЕМ ТОЛЬКО ЕСЛИ:
+            # Кандидат прямо сказал, что патента НЕТ
+            if has_patent == "нет":
                 return False, "non_rf_no_patent"
+            
+            # Если в поле патента "да" или там пока пусто (None/"") — НЕ отказываем.
+            # Если пусто, бот просто пойдет уточнять дальше по сценарию.
 
         # --- Критерий 3: Судимость (Проверяем маркер "violent") ---
         criminal_record = str(profile.get("criminal_record", "")).lower()
@@ -488,7 +527,11 @@ class Engine:
 
         # Если текущее состояние требует календаря, генерируем и добавляем его
         if dialogue_state in SCHEDULING_STATES:
-            # Получаем карту всех свободных слотов
+            # 1. Добавляем "Человеческий" список слотов (твоя просьба)
+            human_slots = await self._get_human_slots_block()
+            prompt_pieces.append(human_slots)
+
+            # 2. Добавляем Динамический календарь (технический блок для выбора дат)
             all_slots = await sheets_service.get_all_slots_map()
             calendar_block = self._generate_calendar_context_2(all_slots)
             prompt_pieces.append(calendar_block)
@@ -553,9 +596,7 @@ class Engine:
 
             await db.flush()
 
-        except Exception as e:
-            error_msg = f"⚠️ Ошибка планирования напоминаний для диалога {dialogue.id}: {e}"
-            logger.error(error_msg)
+        
 
         except Exception as e:
             error_msg = f"⚠️ Ошибка планирования напоминаний для диалога {dialogue.id}: {e}"
@@ -709,14 +750,17 @@ class Engine:
                         # 1. Получаем универсальный коннектор
                         connector = get_connector(dialogue.account.platform)
                         
-                        # 2. Отправляем сообщение
-                        await connector.send_message(
+                        # Отправляем и СОХРАНЯЕМ ответ
+                        send_result = await connector.send_message(
                             account=dialogue.account,
                             db=db,
                             chat_id=dialogue.external_chat_id,
                             text=reminder_text
                         )
-                        ctx_logger.info(f"✅ Напоминание успешно отправлено в {dialogue.account.platform}.")
+                        # Вытаскиваем реальный ID от Авито
+                        real_msg_id = send_result.get("id") if isinstance(send_result, dict) else None
+                        
+                        ctx_logger.info(f"✅ Напоминание успешно отправлено. ID: {real_msg_id}")
 
                     except Exception as e:
                         # 3. Обработка критических/терминальных ошибок (403/404)
@@ -736,7 +780,8 @@ class Engine:
 
                     # --- СОХРАНЕНИЕ В ИСТОРИЮ (только после успешной отправки) ---
                     reminder_msg = {
-                        'message_id': f'rem_{time.time()}',
+                        # Если Авито вернул ID - берем его. Если нет - генерируем временный (fallback)
+                        'message_id': str(real_msg_id) if real_msg_id else f'rem_{time.time()}',
                         'role': 'assistant',
                         'content': reminder_text,
                         'timestamp_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -780,14 +825,16 @@ class Engine:
             
             
             # === 6. PII MASKING & PREPARATION ===
-            # Маскируем телефоны и ФИО во всех новых сообщениях
-            user_entries_to_history = []
+            # Мы НЕ добавляем сообщения в историю (они уже там), 
+            # но нам нужно:
+            # 1. Извлечь телефоны/ФИО для БД
+            # 2. Подготовить замаскированный текст для LLM
+            
             all_masked_content = []
             
-            # Модуль маскировки (нужно будет перенести функцию extract_and_mask_pii в утилиты)
-            
             for pm in pending_messages:
-                original_content = pm.get('content', '') if isinstance(pm, dict) else str(pm)
+                # pm - это реальный объект из dialogue.history (dict)
+                original_content = pm.get('content', '')
                 
                 # Маскируем и пытаемся вытащить телефон/ФИО регулярками
                 masked_content, extracted_fio, extracted_phone = extract_and_mask_pii(original_content)
@@ -797,22 +844,13 @@ class Engine:
                     dialogue.candidate.phone_number = extracted_phone
                     ctx_logger.info(f"📞 Извлечен телефон из текста: {extracted_phone}")
 
-                # Формируем запись для истории (пока в память)
-                message_id = pm.get('message_id') if isinstance(pm, dict) else f'legacy_{int(time.time())}'
-                timestamp_str = pm.get('timestamp_msk', 'время не определено') if isinstance(pm, dict) else 'время не определено'
-                
-                user_entries_to_history.append({
-                    'message_id': message_id,
-                    'role': 'user',
-                    'content': masked_content,
-                    'timestamp_msk': timestamp_str
-                })
+                # Собираем текст для отправки в LLM
                 all_masked_content.append(masked_content)
 
             combined_masked_message = "\n".join(all_masked_content)
             # === СТАТИСТИКА: ПЕРВЫЙ КОНТАКТ ===
             meta = dict(dialogue.metadata_json or {})
-            if not meta.get("first_contact_registered") and user_entries_to_history:
+            if not meta.get("first_contact_registered"):
                 ctx_logger.info("🗣 Зафиксирован первый контакт (ответ кандидата).")
                 db.add(AnalyticsEvent(
                     account_id=dialogue.account_id,
@@ -986,7 +1024,7 @@ class Engine:
 
                 # 2. Сохраняем историю и добавляем системную команду в конец
                 # В нашей архитектуре нет pending_messages, команда кладется прямо в историю.
-                dialogue.history = (dialogue.history or []) + user_entries_to_history + [hallucination_corr_cmd]
+                dialogue.history = (dialogue.history or []) + [hallucination_corr_cmd]
                 dialogue.last_message_at = datetime.datetime.now(datetime.timezone.utc)
 
                 # 3. Фиксируем изменения в базе
@@ -1009,7 +1047,7 @@ class Engine:
             TIME_KEYWORDS = [
                 "сегодня", "завтра", "послезавтра", "понедельник", "вторник", "сред", "четверг", 
                 "пятниц", "суббот", "воскресен", "январ", "феврал", "март", "апрел", "май", "июн", 
-                "июл", "август", "сентябр", "октябр", "ноябр", "декабр", "число", "время", "числа"
+                "июл", "август", "сентябр", "октябр", "ноябр", "декабр", "число", "время", "числа", "числ", "03", "04"
             ]
 
             if new_state in DATE_CRITICAL_STATES:
@@ -1039,7 +1077,7 @@ class Engine:
 
                     if run_audit:
                         ctx_logger.info(f"🔍 Запуск аудита даты: {interview_date}")
-                        full_hist = (dialogue.history or []) + user_entries_to_history
+                        full_hist = (dialogue.history or [])
                         calendar_ctx = self._generate_calendar_context_2() 
                         
                         verified_date, audit_reason = await self._verify_date_audit(db, dialogue, interview_date, full_hist, calendar_ctx, ctx_logger.extra) 
@@ -1082,7 +1120,7 @@ class Engine:
                             }
                             
                             # Сохраняем и перезапускаем
-                            dialogue.history = (dialogue.history or []) + user_entries_to_history + [sys_msg]
+                            dialogue.history = (dialogue.history or []) + [sys_msg]
                             # В HH мы клали user_entries_to_history в pending, но здесь pending нет, поэтому пишем сразу в историю
                             # И важно обновить last_message_at, чтобы не потеряться
                             dialogue.last_message_at = datetime.datetime.now(datetime.timezone.utc)
@@ -1166,7 +1204,7 @@ class Engine:
                                 }
                                 
                                 # Сохраняем и вызываем перегенерацию
-                                dialogue.history = (dialogue.history or []) + user_entries_to_history + [hint_cmd]
+                                dialogue.history = (dialogue.history or []) + [hint_cmd]
                                 await db.commit()
                                 
                                 
@@ -1216,7 +1254,7 @@ class Engine:
                             'timestamp_utc': datetime.datetime.now(datetime.timezone.utc).isoformat()
                         }
 
-                        dialogue.history = (dialogue.history or []) + user_entries_to_history + [time_corr_cmd]
+                        dialogue.history = (dialogue.history or []) + [time_corr_cmd]
                         await db.commit()
                         
                        
@@ -1310,7 +1348,7 @@ class Engine:
                                 dialogue.candidate.profile_data = profile
 
 
-                                dialogue.history = (dialogue.history or []) + user_entries_to_history + [sys_msg]
+                                dialogue.history = (dialogue.history or []) + [sys_msg]
                                 dialogue.current_state = "clarifying_citizenship" # Форсируем стейт
                                 await db.commit()
                                 
@@ -1415,7 +1453,7 @@ class Engine:
                             'timestamp_utc': datetime.datetime.now(datetime.timezone.utc).isoformat()
                         }
                         dialogue.current_state = 'awaiting_phone'
-                        dialogue.history = (dialogue.history or []) + user_entries_to_history + [system_command]
+                        dialogue.history = (dialogue.history or []) + [system_command]
                         await db.commit()
                         
                         
@@ -1464,7 +1502,7 @@ class Engine:
                         "message_id": f"sys_missing_{time.time()}",
                         "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()
                     }
-                    dialogue.history = (dialogue.history or []) + user_entries_to_history + [sys_msg]
+                    dialogue.history = (dialogue.history or []) + [sys_msg]
                     dialogue.current_state = "clarifying_anything"
                     await db.commit()
                     
@@ -1476,7 +1514,7 @@ class Engine:
                 ctx_logger.info("Запуск финального аудита данных через Smart LLM...")
                 
                 # Собираем чистую историю без системных команд
-                all_msgs_for_verify = (dialogue.history or []) + user_entries_to_history
+                all_msgs_for_verify = (dialogue.history or [])
                 verify_history_lines = []
                 for m in all_msgs_for_verify:
                     if not str(m.get('content', '')).startswith('[SYSTEM'):
@@ -1586,7 +1624,7 @@ class Engine:
 
                     # 1. Сохраняем текущие ответы в историю (чтобы LLM их видела при перегенерации)
                     current_history = list(dialogue.history or [])
-                    dialogue.history = (current_history + user_entries_to_history)[-150:]
+                    dialogue.history = (current_history)[-150:]
 
                     # 2. Формируем системную команду для LLM
                     system_command = {
@@ -1748,10 +1786,13 @@ class Engine:
                     meta["interview_date"] = extracted_data.get("interview_date")
                     meta["interview_time"] = extracted_data.get("interview_time")
                     dialogue.metadata_json = meta
+
                     
                     # План напоминалок в БД
                     if meta["interview_date"] and meta["interview_time"]:
                         await self._schedule_interview_reminders(db, dialogue, meta["interview_date"], meta["interview_time"])
+                    else:
+                        ctx_logger.error(f"⚠️ Стейт {new_state}, но дата/время отсутствуют для диалога {dialogue.id}!")
 
                 # === СТАТИСТИКА: ПРОШЕЛ НА СОБЕСЕДОВАНИЕ ===
                 db.add(AnalyticsEvent(
@@ -1778,8 +1819,7 @@ class Engine:
                     event_data={"target_state": new_state}
                 ))
 
-                if new_state == 'interview_scheduled_spb':
-                    new_state = 'post_qualification_chat'
+                dialogue.current_state = 'post_qualification_chat'
             
 
                 
@@ -1795,7 +1835,7 @@ class Engine:
                     ctx_logger.info("Проверка серьезности отказа кандидата через 'Судью'...")
                     
                     # 1. Сбор контекста (как в HH)
-                    all_msgs = (dialogue.history or []) + user_entries_to_history
+                    all_msgs = (dialogue.history or [])
                     clean_history_with_roles = []
                     for m in all_msgs:
                         content = m.get('content', '')
@@ -1862,7 +1902,7 @@ class Engine:
                         }
                         
                         # Сохраняем историю и триггерим воркер заново
-                        dialogue.history = (dialogue.history or []) + user_entries_to_history + [system_command]
+                        dialogue.history = (dialogue.history or []) + [system_command]
                         await db.commit()
                         
                         
@@ -1922,7 +1962,7 @@ class Engine:
                 if new_state == 'qualification_complete':
                     ctx_logger.info("LLM промолчала на этапе 'qualification_complete' (штатно).")
                     
-                    new_history = (dialogue.history or []) + user_entries_to_history
+                    new_history = (dialogue.history or [])
                     dialogue.history = new_history[-150:]
                     dialogue.current_state = new_state
                     # Сбрасываем уровень напоминаний, так как мы "ответили" (обработали)
@@ -1939,19 +1979,23 @@ class Engine:
                     raise ValueError(f"Empty response forbidden for state: {new_state}")
 
             # ФИЗИЧЕСКАЯ ОТПРАВКА (Универсальная)
+            real_avito_id = None
             try:
-                # 1. Получаем коннектор динамически по платформе из аккаунта
                 connector = get_connector(dialogue.account.platform)
                 
-                # 2. Отправляем сообщение через унифицированный интерфейс
-                await connector.send_message(
+                # Отправляем и ловим ID
+                send_result = await connector.send_message(
                     account=dialogue.account,
                     db=db,
                     chat_id=dialogue.external_chat_id,
                     text=bot_response_text
                 )
                 
-                ctx_logger.info(f"📤 Сообщение успешно отправлено в {dialogue.account.platform}.")
+                if isinstance(send_result, dict):
+                    real_avito_id = send_result.get("id")
+
+                ctx_logger.info(f"📤 Сообщение отправлено. ID: {real_avito_id}")
+                
                 
             except Exception as e:
                 # 3. Обработка ошибок
@@ -1973,7 +2017,8 @@ class Engine:
 
             # Создаем запись ответа бота (Формат как в HH, но с UTC)
             bot_msg_entry = {
-                'message_id': f'bot_{time.time()}',
+                # Используем ID от Авито, чтобы избежать дублей при синхронизации
+                'message_id': str(real_avito_id) if real_avito_id else f'bot_{time.time()}',
                 'role': 'assistant',
                 'content': bot_response_text,
                 'timestamp_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -1983,7 +2028,7 @@ class Engine:
 
             # Склеиваем: Старая история + Новые сообщения юзера + Ответ бота
             # Это гарантирует, что история в БД всегда будет полной и последовательной
-            final_history = (dialogue.history or []) + user_entries_to_history + [bot_msg_entry]
+            final_history = (dialogue.history or []) + [bot_msg_entry]
             
             # Ограничиваем размер (150 как в HH)
             dialogue.history = final_history[-150:]

@@ -337,7 +337,7 @@ async def send_hallucination_alert(
 
 
 docker compose up -d --build
-
+docker compose down
 docker logs avito_hr_bot
 
 
@@ -367,3 +367,35 @@ docker compose exec redis redis-cli FLUSHALL
 {
   "tg_chat_id": "-5281527918"
 }
+
+
+
+
+
+Ресетнуть диалог:
+docker exec -it avito_hr_bot python reset_test.py ВСТАВЬ_ТУТ_ID_ЧАТАекстернал
+
+
+
+
+curl -X GET "https://api.avito.ru/core/v1/items/7857841526" \
+     -H "Authorization: Bearer VWw5H-TzTNWT-nz70HBkMgW6ClAibc4BDNNvCI8T"
+
+
+
+curl -k -X GET "https://api.avito.ru/core/v1/accounts/self" \
+     -H "Authorization: Bearer VWw5H-TzTNWT-nz70HBkMgW6ClAibc4BDNNvCI8T"
+
+
+curl -k -X GET "https://api.avito.ru/core/v1/accounts/380320788/items/7857841526" \
+     -H "Authorization: Bearer VWw5H-TzTNWT-nz70HBkMgW6ClAibc4BDNNvCI8T"
+
+curl -k -X GET "https://api.avito.ru/core/v1/accounts/380320788/items?ids=7857841526" \
+     -H "Authorization: Bearer VWw5H-TzTNWT-nz70HBkMgW6ClAibc4BDNNvCI8T"
+
+
+curl -k -X GET "https://api.avito.ru/core/v1/items?item_id=7857841526" \
+     -H "Authorization: Bearer VWw5H-TzTNWT-nz70HBkMgW6ClAibc4BDNNvCI8T"
+
+curl -k -X GET "https://api.avito.ru/core/v1/items?q=7857841526" \
+     -H "Authorization: Bearer VWw5H-TzTNWT-nz70HBkMgW6ClAibc4BDNNvCI8T"

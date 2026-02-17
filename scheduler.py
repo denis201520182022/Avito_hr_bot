@@ -12,6 +12,7 @@ from app.core.rabbitmq import mq
 from app.db.session import AsyncSessionLocal, engine
 from app.db.models import Dialogue, InterviewReminder
 from app.services.knowledge_base import kb_service
+from sqlalchemy.orm import selectinload
 
 # Настройка логирования
 logging.basicConfig(
@@ -46,7 +47,7 @@ class Scheduler:
     # --- 1. ЛОГИКА МОЛЧУНОВ ---
     async def _loop_silence_reminders(self):
         """Проверка кандидатов, которые замолчали (с учетом часовых поясов и тихого часа)"""
-        from sqlalchemy.orm import selectinload
+        
         
         while self.is_running:
             try:

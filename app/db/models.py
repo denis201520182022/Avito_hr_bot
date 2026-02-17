@@ -1,7 +1,8 @@
 from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Boolean, Numeric, BigInteger, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship, declarative_base
-
+from sqlalchemy import Date, func
+from sqlalchemy import UniqueConstraint
 Base = declarative_base()
 
 class Account(Base):
@@ -31,24 +32,20 @@ class Account(Base):
 
 
 class JobContext(Base):
-    """
-    Вместо Vacancy. Это контекст: вакансия на HH или объявление на Авито.
-    """
     __tablename__ = 'job_contexts'
     
     id = Column(Integer, primary_key=True)
-    external_id = Column(String(50), unique=True, index=True) # hh_vacancy_id или avito_item_id
+    external_id = Column(String(50), unique=True, index=True)
     account_id = Column(Integer, ForeignKey('accounts.id'))
     
     title = Column(String(255))
     city = Column(String(100))
+    is_active = Column(Boolean, default=True) # <-- НОВЫЙ СТОЛБЕЦ
     
-    # Доп. инфа по вакансии (если нужно хранить описание здесь, а не в Google Doc)
     description_data = Column(JSONB, server_default='{}')
     
     account = relationship("Account", back_populates="vacancies")
     dialogues = relationship("Dialogue", back_populates="vacancy")
-
 
 class Candidate(Base):
     """
@@ -217,3 +214,29 @@ class AnalyticsEvent(Base):
     event_data = Column(JSONB, server_default='{}')
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AvitoSearchQuota(Base):
+    """Общий баланс лимитов на открытие контактов резюме"""
+    __tablename__ = 'avito_search_quotas'
+    
+    id = Column(Integer, primary_key=True)
+    account_id = Column(Integer, ForeignKey('accounts.id'), unique=True)
+    remaining_limits = Column(Integer, default=0) # Сколько контактов можно открыть
+    
+    account = relationship("Account")
+
+class AvitoSearchStat(Base):
+    """Статистика затрат лимитов по дням и вакансиям"""
+    __tablename__ = 'avito_search_stats'
+    __table_args__ = (
+        UniqueConstraint('account_id', 'vacancy_id', 'date', name='_account_vacancy_date_uc'),
+    )
+    
+    id = Column(Integer, primary_key=True)
+    vacancy_id = Column(Integer, ForeignKey('job_contexts.id'))
+    account_id = Column(Integer, ForeignKey('accounts.id'))
+    date = Column(Date, server_default=func.current_date())
+    spent_count = Column(Integer, default=0) # Сколько потрачено за этот день
+
+    vacancy = relationship("JobContext")

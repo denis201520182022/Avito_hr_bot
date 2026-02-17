@@ -85,7 +85,8 @@ role_choice_keyboard = InlineKeyboardMarkup(
 limits_menu_keyboard = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="⚙️ Установить баланс", callback_data="set_limit")],
-        [InlineKeyboardButton(text="💰 Установить тарифы", callback_data="set_tariff")]
+        [InlineKeyboardButton(text="💰 Установить тарифы", callback_data="set_tariff")],
+        [InlineKeyboardButton(text="🔎 Изменить лимиты поиска", callback_data="set_search_limit")]
     ]
 )
 
