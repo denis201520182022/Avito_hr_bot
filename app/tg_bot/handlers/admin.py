@@ -89,6 +89,8 @@ async def cancel_callback_handler(callback: CallbackQuery, state: FSMContext):
 # --- УПРАВЛЕНИЕ БАЛАНСОМ И ТАРИФАМИ ---
 
 
+# tg_bot/handlers/admin.py (ВАШ ФАЙЛ)
+
 @router.message(F.text == "⚙️ Баланс и Тариф")
 async def limits_menu(message: Message, session: AsyncSession):
     # Тянем настройки
@@ -97,15 +99,13 @@ async def limits_menu(message: Message, session: AsyncSession):
         await message.answer("❌ Не удалось загрузить настройки.")
         return
 
-    # Тянем квоты поиска (из вашего исходного кода)
+    # Тянем квоты поиска
     quota_stmt = select(AvitoSearchQuota).join(Account)
     quotas = (await session.execute(quota_stmt)).scalars().all()
 
-    # Извлекаем данные из JSONB словарей (с защитой, если ключей нет)
     stats = settings.stats or {}
     costs = settings.costs or {}
 
-    # Формируем список для контактов/лимитов
     quota_lines = []
     if quotas:
         for q in quotas:
@@ -113,16 +113,17 @@ async def limits_menu(message: Message, session: AsyncSession):
     else:
         quota_lines.append(Italic("Квоты не настроены.\n"))
 
-    # Собираем контент в новом формате
+    # Собираем контент с ИСПРАВЛЕННЫМ синтаксисом
     content = Text(
         Bold("📊 Управление балансом:"), "\n\n",
         "Текущий баланс: ", Bold(f"{settings.balance:.2f}"), " руб.\n\n",
         
         Bold("📈 История затрат (всего):"), "\n",
-        "- Потрачено на диалоги: ", Bold(f"{stats.get('spent_on_dialogues', 0):.2f}"), " руб.\n"
-    
-        "💰 ", Bold("Тарифы:"), "\n",
-        "Новый диалог: ", Bold(f"{costs.get('dialogue', 0):.2f}"), " руб.\n",
+        # ВОТ ЗДЕСЬ БЫЛА ОШИБКА -> добавлена запятая в конце строки
+        "- Потрачено на диалоги: ", Bold(f"{stats.get('spent_on_dialogues', 0):.2f}"), " руб.\n", 
+        
+        "\n💰 ", Bold("Тарифы:"), "\n",
+        "Новый диалог: ", Bold(f"{costs.get('dialogue', 0):.2f}"), " руб.\n\n",
 
         Bold("🔎 Лимиты поиска (контакты):"), "\n",
         *quota_lines,
@@ -130,6 +131,9 @@ async def limits_menu(message: Message, session: AsyncSession):
         
         "🔔 Уведомление при балансе < ", Bold(f"{settings.low_balance_threshold:.2f}"), " руб."
     )
+    
+    # Для редактирования сообщения в будущем, лучше использовать message.answer
+    await message.answer(**content.as_kwargs(), reply_markup=limits_menu_keyboard)
 
     await message.answer(**content.as_kwargs(), reply_markup=limits_menu_keyboard)
 @router.callback_query(F.data == "set_limit")

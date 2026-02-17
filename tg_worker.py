@@ -273,6 +273,10 @@ async def run_rabbitmq_consumer():
         async for message in queue_iter:
             # ДОБАВЛЯЕМ ignore_processed=True
             async with message.process(ignore_processed=True):
+                # --- ДОБАВЛЕНА ЗАДЕРЖКА ---
+                    
+                await asyncio.sleep(10) 
+                    # --- КОНЕЦ ДОБАВЛЕННОЙ ЗАДЕРЖКИ ---
                 try:
                     payload = json.loads(message.body.decode())
                     await handle_reporting_task(payload)
