@@ -1820,6 +1820,7 @@ class Engine:
                 ))
 
                 dialogue.current_state = 'post_qualification_chat'
+                new_state = 'post_qualification_chat'
             
 
                 
