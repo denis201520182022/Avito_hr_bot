@@ -129,7 +129,7 @@ async def send_tg_notification(dialogue: Dialogue, candidate: Candidate, vacancy
         return res
     
     meta = dialogue.metadata_json or {}
-    avito_link = f"https://www.avito.ru/profile/messenger/channels/{dialogue.external_chat_id}"
+    avito_link = f"https://www.avito.ru/profile/messenger/channel/{dialogue.external_chat_id}"
     
     message_text = (
         f"🚀 *Новый кандидат \(Авито\)*\n\n"
@@ -202,7 +202,7 @@ async def handle_reporting_task(message_body: dict):
                     "full_name": candidate.full_name,
                     "phone": candidate.phone_number,
                     "vacancy": vacancy.title if vacancy else "Не указана",
-                    "chat_link": f"https://www.avito.ru/profile/messenger/channels/{dialogue.external_chat_id}",
+                    "chat_link": f"https://www.avito.ru/profile/messenger/channel/{dialogue.external_chat_id}",
                     "interview_dt": f"{meta.get('interview_date')} {meta.get('interview_time')}",
                     "status": "Записан ботом"
                 })

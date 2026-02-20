@@ -1286,6 +1286,9 @@ class Engine:
                 profile = dict(dialogue.candidate.profile_data or {})
                 changed = False
 
+
+                
+
                 # --- 13.1 ОБРАБОТКА ВОЗРАСТА ---
                 raw_age = extracted_data.get("age")
                 if raw_age:
@@ -1293,14 +1296,16 @@ class Engine:
                     allowed_age_states = ['awaiting_age', 'clarifying_anything']
                     
                     if current_state_at_update in allowed_age_states:
-                        current_user_text = combined_masked_message.lower()
-                        # Валидация наличия числа в тексте
-                        if self._validate_age_in_text(current_user_text, raw_age):
-                            profile["age"] = int(raw_age)
-                            changed = True
-                            ctx_logger.info(f"✅ Возраст {raw_age} верифицирован и записан.")
+                        if current_state_at_update == 'clarifying_anything' and profile.get("age"):
+                            ctx_logger.debug(f"Защита: поле age уже заполнено, пропускаем в стейте {current_state_at_update}")
                         else:
-                            ctx_logger.warning(f"⚠️ LLM придумала возраст {raw_age}, но в тексте его нет. Пропуск.")
+                            current_user_text = combined_masked_message.lower()
+                            if self._validate_age_in_text(current_user_text, raw_age):
+                                profile["age"] = int(raw_age)
+                                changed = True
+                                ctx_logger.info(f"✅ Возраст {raw_age} верифицирован и записан.")
+                            else:
+                                ctx_logger.warning(f"⚠️ LLM придумала возраст {raw_age}, но в тексте его нет. Пропуск.")
                     else:
                         ctx_logger.debug(f"Игнорируем возраст {raw_age}: стейт {current_state_at_update} не разрешает.")
 
@@ -1310,60 +1315,67 @@ class Engine:
                     allowed_cit_states = ['awaiting_citizenship', 'clarifying_citizenship', 'clarifying_anything']
                     
                     if current_state_at_update in allowed_cit_states:
-                        cit_low = str(raw_citizenship).lower()
-                        
-                        # Простая проверка на РФ
-                        is_rf = any(x in cit_low for x in ["россия", "рф", "российская", "russia"])
-                        
-                        if is_rf:
-                            profile["citizenship"] = "РФ"
-                            changed = True
+                        if current_state_at_update == 'clarifying_anything' and profile.get("citizenship"):
+                            ctx_logger.debug(f"Защита: поле citizenship уже заполнено, пропускаем")
                         else:
-                            # Это иностранец. Пишем как есть.
-                            profile["citizenship"] = raw_citizenship
-                            changed = True
                             
-                            # Проверяем, есть ли уже информация о патенте
-                            has_patent_info = extracted_data.get("has_patent")
+                            cit_low = str(raw_citizenship).lower()
                             
-                            # Если патента нет в extracted_data и мы не в режиме уточнения
-                            if not has_patent_info and current_state_at_update != 'clarifying_citizenship':
-                                ctx_logger.info(f"🌍 Гражданство '{raw_citizenship}' (не РФ). Требуется уточнение патента.")
+                            # Простая проверка на РФ
+                            is_rf = any(x in cit_low for x in ["россия", "рф", "российская", "russia"])
+                            
+                            if is_rf:
+                                profile["citizenship"] = "РФ"
+                                changed = True
+                            else:
+                                # Это иностранец. Пишем как есть.
+                                profile["citizenship"] = raw_citizenship
+                                changed = True
                                 
-                                # Формируем команду на уточнение
-                                correction_msg = (
-                                    f"[SYSTEM COMMAND] Кандидат сообщил гражданство {raw_citizenship} (не РФ). "
-                                    f"Ты ОБЯЗАНА уточнить, есть ли у него действующий патент для работы. "
-                                    f"Установи стейт 'clarifying_citizenship' и задай этот вопрос."
-                                )
+                                # Проверяем, есть ли уже информация о патенте
+                                has_patent_info = extracted_data.get("has_patent")
                                 
-                                sys_msg = {
-                                    "role": "user", 
-                                    "content": correction_msg, 
-                                    "message_id": f"sys_cit_check_{time.time()}",
-                                    "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()
-                                }
-                                
-                                # Сохраняем профиль (гражданство мы записали) и уходим на ретрай
-                                dialogue.candidate.profile_data = profile
+                                # Если патента нет в extracted_data и мы не в режиме уточнения
+                                if not has_patent_info and current_state_at_update != 'clarifying_citizenship':
+                                    ctx_logger.info(f"🌍 Гражданство '{raw_citizenship}' (не РФ). Требуется уточнение патента.")
+                                    
+                                    # Формируем команду на уточнение
+                                    correction_msg = (
+                                        f"[SYSTEM COMMAND] Кандидат сообщил гражданство {raw_citizenship} (не РФ). "
+                                        f"Ты ОБЯЗАНА уточнить, есть ли у него действующий патент для работы. "
+                                        f"Установи стейт 'clarifying_citizenship' и задай этот вопрос."
+                                    )
+                                    
+                                    sys_msg = {
+                                        "role": "user", 
+                                        "content": correction_msg, 
+                                        "message_id": f"sys_cit_check_{time.time()}",
+                                        "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()
+                                    }
+                                    
+                                    # Сохраняем профиль (гражданство мы записали) и уходим на ретрай
+                                    dialogue.candidate.profile_data = profile
 
 
-                                dialogue.history = (dialogue.history or []) + [sys_msg]
-                                dialogue.current_state = "clarifying_citizenship" # Форсируем стейт
-                                await db.commit()
-                                
-                                
-                                await mq.publish("engine_tasks", {"dialogue_id": dialogue.id, "trigger": "citizenship_refine"})
-                                return
+                                    dialogue.history = (dialogue.history or []) + [sys_msg]
+                                    dialogue.current_state = "clarifying_citizenship" # Форсируем стейт
+                                    await db.commit()
+                                    
+                                    
+                                    await mq.publish("engine_tasks", {"dialogue_id": dialogue.id, "trigger": "citizenship_refine"})
+                                    return
 
                     else:
                         ctx_logger.debug(f"Игнорируем гражданство {raw_citizenship}: стейт {current_state_at_update} не разрешает.")
                 
                 # Записываем ответ про патент, если он пришел (обычно в стейте clarifying_citizenship)
                 if extracted_data.get("has_patent"):
-                     # Тут стейт можно не проверять так строго, или проверить 'clarifying_citizenship'
-                     profile["has_patent"] = extracted_data["has_patent"] # "да" или "нет"
-                     changed = True
+                     # ДОБАВИТЬ ЭТУ ПРОВЕРКУ:
+                     if current_state_at_update == 'clarifying_anything' and profile.get("has_patent"):
+                         ctx_logger.debug("Защита: патент уже есть, не перезаписываем")
+                     else:
+                         profile["has_patent"] = extracted_data["has_patent"]
+                         changed = True
 
                 # --- 13.3 ОСТАЛЬНЫЕ ПОЛЯ (Маппинг стейтов как в HH) ---
                 
@@ -1387,11 +1399,15 @@ class Engine:
                     val = extracted_data.get(field_key)
                     if val:
                         if current_state_at_update in allowed_states:
+                            # ДОБАВИТЬ ЭТУ ПРОВЕРКУ:
+                            if current_state_at_update == 'clarifying_anything' and profile.get(field_key):
+                                ctx_logger.debug(f"Защита: {field_key} уже заполнено, пропускаем")
+                                continue # Пропускаем запись этого поля
+                                
                             profile[field_key] = val
                             changed = True
                         else:
                              ctx_logger.debug(f"Игнорируем {field_key}='{val}': стейт {current_state_at_update} не разрешает.")
-
                 if changed:
                     dialogue.candidate.profile_data = profile
                     # --- НОВАЯ ЛОГИКА: МГНОВЕННЫЙ ЧЕК ---
@@ -1460,52 +1476,123 @@ class Engine:
                         await mq.publish("engine_tasks", {"dialogue_id": dialogue.id, "trigger": "force_phone_retry"})
                         return
 
-                # --- 14.2 ПРОВЕРКА ПОЛНОТЫ АНКЕТЫ (Guardrail) ---
+                # --- 14.2 ПРОВЕРКА ПОЛНОТЫ АНКЕТЫ (Динамический LLM Recovery) ---
                 profile = dialogue.candidate.profile_data or {}
-                missing_fields = []
                 
-                # Базовые поля
-               
-                if not dialogue.candidate.phone_number: missing_fields.append("Номер телефона")
-                if not profile.get("age"): missing_fields.append("Возраст")
-                if not profile.get("citizenship"): missing_fields.append("Гражданство")
+                # 1. Собираем карту только РЕАЛЬНО отсутствующих данных
+                missing_data_map = {}
                 
-                # --- ДОБАВЛЕННЫЕ ПРОВЕРКИ ---
-                if not profile.get("experience"): missing_fields.append("Опыт работы")
-                if not profile.get("readiness_date"): missing_fields.append("Готовность выйти на работу")
-                if not profile.get("has_medbook"): missing_fields.append("Наличие медкнижки")
-                if not profile.get("criminal_record"): missing_fields.append("Информация о судимости")
-                # ----------------------------
+                if not dialogue.candidate.phone_number: 
+                    missing_data_map["phone"] = "Номер телефона"
+                if not profile.get("age"): 
+                    missing_data_map["age"] = "Возраст собеседника (числом)"
+                if not profile.get("citizenship"): 
+                    missing_data_map["citizenship"] = "Гражданство собеседника(страна)"
+                if not profile.get("experience"): 
+                    missing_data_map["experience"] = "Опыт работы (описание, или отсутствие опыта просто 'нет' тогда поставь)"
+                if not profile.get("readiness_date"): 
+                    missing_data_map["readiness_date"] = "Когда готов выйти на работу (вахту)"
+                if not profile.get("has_medbook"): 
+                    missing_data_map["has_medbook"] = "Наличие медкнижки (да/нет)"
+                if not profile.get("criminal_record"): 
+                    missing_data_map["criminal_record"] = "Судимость (<Описание судимости. Если это преступление против личности (убийство, разбой, насилие, тяжкие телесные), верни строго 'violent'. Если судимости нет, верни 'нет’. В остальных случаях опиши кратко (например, 'экономическая').>)"
 
-                # Если иностранец — проверяем патент
-                citizenship = str(profile.get("citizenship", "")).upper()
-                # Проверка не РФ (учитываем разные написания)
-                is_rf = any(x in citizenship.lower() for x in ["россия", "рф", "российская", "russia"])
-                
-                if citizenship and not is_rf and not profile.get("has_patent"):
-                    missing_fields.append("Наличие патента")
+                # Проверка патента для иностранцев
+                cit_val = str(profile.get("citizenship", "")).lower()
+                is_rf = any(x in cit_val for x in ["россия", "рф", "российская", "russia"])
+                if profile.get("citizenship") and not is_rf and not profile.get("has_patent"):
+                    missing_data_map["has_patent"] = "Наличие патента (да/нет)"
 
-                if missing_fields:
-                    missing_str = ", ".join(missing_fields)
-                    ctx_logger.warning(f"Анкета не полная. Не хватает: {missing_str}")
+                # Если есть пробелы — запускаем точечный поиск в истории
+                if missing_data_map:
+                    ctx_logger.info(f"🔍 Анкета не полна. Запуск Recovery для ключей: {list(missing_data_map.keys())}")
                     
-                    command_content = (
-                        f"[SYSTEM COMMAND] Анкета не заполнена полностью. "
-                        f"В базе данных отсутствуют поля: {missing_str}. "
-                        f"Ты ОБЯЗАНА задать прямой вопрос кандидату и уточнить: {missing_str}. "
-                        f"НЕ ПЕРЕХОДИ в qualification_complete без этих данных."
+                    # Подготовка истории (последние 20 сообщений)
+                    clean_history_lines = []
+                    for m in (dialogue.history or []):
+                        if not str(m.get('content', '')).startswith('[SYSTEM'):
+                            role = "Кандидат" if m.get('role') == 'user' else "Бот"
+                            clean_history_lines.append(f"{role}: {m.get('content')}")
+                    recent_history_text = "\n".join(clean_history_lines[-20:])
+
+                    # Генерируем динамическую инструкцию по формату JSON
+                    # Пример: "age": <значение или null>, "experience": <значение или null>
+                    json_format_example = "{\n" + ",\n".join([f'  "{k}": <значение или null>' for k in missing_data_map.keys()]) + "\n}"
+                    
+                    # Генерируем описание того, что искать
+                    fields_to_search = "\n".join([f"- {k} ({v})" for k, v in missing_data_map.items()])
+
+                    recovery_prompt = (
+                        f"Ты — технический аналитик-экстрактор. Твоя задача: найти в диалоге ответы на конкретные вопросы, которые бот мог пропустить.\n\n"
+                        f"[ЧТО НУЖНО НАЙТИ]:\n{fields_to_search}\n\n"
+                        f"[ПРАВИЛА]:\n"
+                        f"1. Используй ТОЛЬКО информацию из сообщений с пометкой 'Кандидат'.\n"
+                        f"2. Если информации НЕТ в тексте, строго пиши null.\n"
+                        f"3. НЕ ПРИДУМЫВАЙ данные. Если кандидат сомневается или не ответил — пиши null.\n\n"
+                        f"Ответ верни СТРОГО в формате JSON:\n{json_format_example}"
+                    )
+
+                    try:
+                        recovery_attempts = []
+                        # Используем Smart-модель (gpt-4o) для высокой точности экстракции
+                        recovery_response = await get_bot_response(
+                            system_prompt=recovery_prompt,
+                            dialogue_history=[],
+                            user_message=f"ИСТОРИЯ ДИАЛОГА ДЛЯ АНАЛИЗА:\n{recent_history_text}",
+                            attempt_tracker=recovery_attempts,
+                            extra_context=ctx_logger.extra
+                        )
+
+                        if recovery_response:
+                            # Логируем стоимость и токены (включая скрытые ретраи)
+                            await self._log_llm_usage(db, dialogue, "Data_Recovery_Audit", recovery_response.get("usage_stats"), model_name="gpt-4o-mini")
+                            
+                            extracted_data = recovery_response.get('parsed_response', {})
+                            is_profile_updated = False
+
+                            # Обрабатываем то, что удалось спасти
+                            for key in list(missing_data_map.keys()):
+                                val = extracted_data.get(key)
+                                if val is not None and str(val).lower() != 'null':
+                                    if key == "phone":
+                                        dialogue.candidate.phone_number = str(val)
+                                        ctx_logger.info(f"✨ Recovery спас телефон: {val}")
+                                    else:
+                                        profile[key] = val
+                                        ctx_logger.info(f"✨ Recovery спас поле {key}: {val}")
+                                    
+                                    # Удаляем из списка "недостающих", чтобы бот не спрашивал
+                                    missing_data_map.pop(key)
+                                    is_profile_updated = True
+
+                            if is_profile_updated:
+                                dialogue.candidate.profile_data = profile
+                                await db.flush()
+
+                    except Exception as e:
+                        ctx_logger.error(f"❌ Ошибка в блоке Recovery: {e}")
+
+                # 5. ФИНАЛЬНЫЙ ВЕРДИКТ: Если данные все еще нужны
+                if missing_data_map:
+                    missing_human_names = ", ".join(missing_data_map.values())
+                    ctx_logger.warning(f"⚠️ Recovery не помог. Не хватает: {missing_human_names}")
+                    
+                    sys_cmd_content = (
+                        f"[SYSTEM COMMAND] Анкета не завершена. Тебе НЕОБХОДИМО уточнить следующие данные: {missing_human_names}. "
+                        f"Прямо сейчас задай вопрос кандидату, чтобы узнать эти сведения. "
+                        f"Используй стейт clarifying_anything для уточнения этих сведений"
+                        f"ЗАПРЕЩЕНО переходить в 'qualification_complete', пока эти поля пусты."
                     )
                     
                     sys_msg = {
                         "role": "user",
-                        "content": command_content,
-                        "message_id": f"sys_missing_{time.time()}",
+                        "content": sys_cmd_content,
+                        "message_id": f"sys_missing_retry_{time.time()}",
                         "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()
                     }
                     dialogue.history = (dialogue.history or []) + [sys_msg]
                     dialogue.current_state = "clarifying_anything"
                     await db.commit()
-                    
                     
                     await mq.publish("engine_tasks", {"dialogue_id": dialogue.id, "trigger": "data_fix_retry"})
                     return

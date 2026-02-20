@@ -377,25 +377,53 @@ docker exec -it avito_hr_bot python reset_test.py u2i-NyF0fdvl9bDIzxRgvbA61Q
 
 
 
+Удалить диалог
 
-curl -X GET "https://api.avito.ru/core/v1/items/7857841526" \
-     -H "Authorization: Bearer VWw5H-TzTNWT-nz70HBkMgW6ClAibc4BDNNvCI8T"
+DO $$
+DECLARE
+    -- === НАСТРОЙКА ===
+    -- Укажите здесь ID диалога, который нужно удалить
+    target_dialogue_id INTEGER := 5; 
+    
+    -- Переменная для хранения ID кандидата
+    target_candidate_id INTEGER;
+BEGIN
+    -- 1. Получаем ID кандидата перед тем, как удалить диалог
+    SELECT candidate_id INTO target_candidate_id
+    FROM dialogues
+    WHERE id = target_dialogue_id;
 
+    -- Если диалог не найден, выходим
+    IF target_candidate_id IS NULL THEN
+        RAISE NOTICE 'Диалог с ID % не найден.', target_dialogue_id;
+        RETURN;
+    END IF;
 
+    -- 2. Удаляем все данные, ссылающиеся на диалог (Дети)
+    DELETE FROM llm_logs WHERE dialogue_id = target_dialogue_id;
+    DELETE FROM interview_reminders WHERE dialogue_id = target_dialogue_id;
+    DELETE FROM interview_followups WHERE dialogue_id = target_dialogue_id;
+    DELETE FROM analytics_events WHERE dialogue_id = target_dialogue_id;
 
-curl -k -X GET "https://api.avito.ru/core/v1/accounts/self" \
-     -H "Authorization: Bearer VWw5H-TzTNWT-nz70HBkMgW6ClAibc4BDNNvCI8T"
+    -- 3. Удаляем сам диалог
+    DELETE FROM dialogues WHERE id = target_dialogue_id;
+    
+    RAISE NOTICE 'Диалог % удален.', target_dialogue_id;
 
+    -- 4. Удаляем кандидата (Родитель)
+    -- Удаляем ТОЛЬКО если у этого кандидата больше нет записей в таблице dialogues.
+    -- (Мы уже удалили текущий диалог выше, поэтому проверяем, остались ли другие).
+    DELETE FROM candidates
+    WHERE id = target_candidate_id
+    AND NOT EXISTS (
+        SELECT 1 FROM dialogues WHERE candidate_id = target_candidate_id
+    );
 
-curl -k -X GET "https://api.avito.ru/core/v1/accounts/380320788/items/7857841526" \
-     -H "Authorization: Bearer VWw5H-TzTNWT-nz70HBkMgW6ClAibc4BDNNvCI8T"
+    -- Проверяем, был ли удален кандидат
+    IF FOUND THEN
+        RAISE NOTICE 'Кандидат (ID %) также был удален, так как у него нет других диалогов.', target_candidate_id;
+    ELSE
+        RAISE NOTICE 'Кандидат (ID %) ОСТАВЛЕН в базе, так как у него есть другие активные диалоги.', target_candidate_id;
+    END IF;
 
-curl -k -X GET "https://api.avito.ru/core/v1/accounts/380320788/items?ids=7857841526" \
-     -H "Authorization: Bearer VWw5H-TzTNWT-nz70HBkMgW6ClAibc4BDNNvCI8T"
-
-
-curl -k -X GET "https://api.avito.ru/core/v1/items?item_id=7857841526" \
-     -H "Authorization: Bearer VWw5H-TzTNWT-nz70HBkMgW6ClAibc4BDNNvCI8T"
-
-curl -k -X GET "https://api.avito.ru/core/v1/items?q=7857841526" \
-     -H "Authorization: Bearer VWw5H-TzTNWT-nz70HBkMgW6ClAibc4BDNNvCI8T"
+END $$;
