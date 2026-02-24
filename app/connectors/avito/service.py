@@ -181,11 +181,11 @@ class AvitoConnectorService:
             logger.info(f"⏳ Сообщение для чата {dialogue.external_chat_id} добавлено в очередь ожидания.")
             return
 
-        await redis.set(lock_key, "1", ex=15)
+        await redis.set(lock_key, "1", ex=6)
 
         async def wait_and_push():
             try:
-                await asyncio.sleep(10)
+                await asyncio.sleep(5)
                 
                 engine_task = {
                     "dialogue_id": dialogue.id,
@@ -586,13 +586,17 @@ class AvitoConnectorService:
         try:
             user_id = account.auth_data.get("user_id", "me")
             api_messages = await avito.get_chat_messages(user_id, chat_id, account, db)
-            
+            one_hour_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
             existing_ids = {str(m.get("message_id")) for m in (dialogue.history or [])}
             new_history = list(dialogue.history or [])
             changed = False
             
             for msg in api_messages:
                 m_id = str(msg.get("id"))
+                msg_ts = datetime.datetime.fromtimestamp(msg.get("created"), datetime.timezone.utc)
+                if msg_ts < one_hour_ago:
+                    continue # Пропускаем сообщение, если оно старше часа
+                
                 if m_id not in existing_ids:
                     # Определяем роль
                     direction = msg.get("direction")
