@@ -16,7 +16,7 @@ from app.utils.redis_lock import get_redis_client
 
 from .client import avito
 
-logger = logging.getLogger("avito.service")
+from app.utils.logger import logger, set_log_context, log_context
 
 class AvitoConnectorService:
     def __init__(self):
@@ -30,7 +30,7 @@ class AvitoConnectorService:
         self.is_running = True
         logger.info("🚀 Запуск Avito Connector Service...")
         await self._setup_all_webhooks()
-        self._poll_task = asyncio.create_task(self._poll_loop())
+        #self._poll_task = asyncio.create_task(self._poll_loop())
 
     async def stop(self):
         logger.info("🛑 Остановка Avito Connector Service...")
@@ -77,6 +77,7 @@ class AvitoConnectorService:
             await asyncio.sleep(self.poll_interval)
 
     async def _poll_single_account(self, account: Account, db: AsyncSession):
+        set_log_context(account_id=account.id, account_name=account.name, source="avito_poller")
         try:
             new_apps = await avito.get_new_applications(account, db)
             for app_data in new_apps:
@@ -216,7 +217,11 @@ class AvitoConnectorService:
         
         avito_user_id = raw_data.get("avito_user_id") 
         account_id = raw_data.get("account_id")      
-        
+        set_log_context(
+            source=source,
+            avito_user_id=avito_user_id,
+            account_id=account_id
+        )
         external_chat_id = None
         resume_id = None
         item_id = None
@@ -226,6 +231,8 @@ class AvitoConnectorService:
             msg_val = payload.get("payload", {}).get("value", {})
             external_chat_id = msg_val.get("chat_id")
             item_id = msg_val.get("item_id")
+            if external_chat_id:
+                set_log_context(chat_id=external_chat_id)
 
             # --- ИСПРАВЛЕНИЕ ДЛЯ ИГНОРИРОВАНИЯ СОБСТВЕННЫХ СООБЩЕНИЙ ---
             webhook_author_id = msg_val.get("author_id")
@@ -245,10 +252,15 @@ class AvitoConnectorService:
             external_chat_id = contacts.get("chat", {}).get("value")
             resume_id = str(payload.get("applicant", {}).get("resume_id"))
             item_id = payload.get("vacancy_id")
+            if external_chat_id:
+                set_log_context(chat_id=external_chat_id)
         elif source == "avito_search_found":
             external_chat_id = raw_data.get("chat_id")
             resume_id = raw_data.get("resume_id")
             item_id = raw_data.get("vacancy_id")
+            if external_chat_id:
+            
+                set_log_context(chat_id=external_chat_id)
 
         async with AsyncSessionLocal() as db:
             # Находим наш аккаунт
@@ -516,7 +528,14 @@ class AvitoConnectorService:
         current_balance = settings_obj.balance
 
         if current_balance < cost_per_dialogue:
-            logger.error(f"💰 НЕДОСТАТОЧНО СРЕДСТВ! Баланс: {current_balance}. Диалог {chat_id} игнорируется.")
+            logger.error(
+                "💰 НЕДОСТАТОЧНО СРЕДСТВ!", 
+                extra={
+                    "balance": float(current_balance), 
+                    "cost": float(cost_per_dialogue),
+                    "account_name": account.name
+                }
+            )
             if not settings_obj.low_limit_notified:
                 await mq.publish("tg_alerts", {
                     "type": "system",
@@ -628,7 +647,7 @@ class AvitoConnectorService:
                 
         except Exception as e:
             error_msg = f"💥 Ошибка синхронизации истории для чата {chat_id}: {e}"
-            logger.error(error_msg, exc_info=True)
+            logger.exception("💥 Ошибка синхронизации истории")
             await mq.publish("tg_alerts", {"type": "system", "text": error_msg})
             raise e
 

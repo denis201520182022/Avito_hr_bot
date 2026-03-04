@@ -9,8 +9,7 @@ from app.core.engine import dispatcher
 from app.db.session import engine
 from app.services.llm import cleanup_llm
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("EngineWorker")
+from app.utils.logger import logger, set_log_context, log_context
 
 async def on_engine_task(message: IncomingMessage):
     """
@@ -19,6 +18,7 @@ async def on_engine_task(message: IncomingMessage):
     """
     async with message.process(ignore_processed=True):
         # 1. Декодируем сообщение
+        log_context.set({})
         try:
             body_raw = message.body.decode()
             task_data = json.loads(body_raw)
@@ -28,6 +28,15 @@ async def on_engine_task(message: IncomingMessage):
             return
 
         # 2. Обработка логики
+
+        # 2. УСТАНАВЛИВАЕМ КОНТЕКСТ
+        set_log_context(
+            dialogue_id=task_data.get('dialogue_id'),
+            account_id=task_data.get('account_id'),
+            candidate_id=task_data.get('candidate_id'),
+            platform=task_data.get('platform', 'avito'),
+            step="engine_start" # Можно добавить текущий этап
+        )
         diag_id = task_data.get('dialogue_id', 'unknown')
         try:
             logger.info(f"🧠 [Engine] Обработка ИИ-логики диалога ID: {diag_id}")
@@ -40,7 +49,7 @@ async def on_engine_task(message: IncomingMessage):
         except Exception as e:
             # Логируем ошибку (твоя исходная логика)
             error_msg = f"❌ Ошибка в Движке (Engine):\nДиалог ID: `{diag_id}`\nТекст ошибки: {str(e)}"
-            logger.error(error_msg, exc_info=True)
+            logger.exception("❌ Ошибка в Движке (Engine)")
 
             # --- ОТПРАВКА АЛЕРТА АДМИНАМ (твоя исходная логика) ---
             try:
@@ -68,7 +77,7 @@ async def main():
     engine_queue = await channel.get_queue("engine_tasks")
     await engine_queue.consume(on_engine_task)
 
-    logger.info("👷 Engine Worker (Brain) запущен.")
+    logger.info("👷 Engine Worker (Brain) запущен", extra={"prefetch_count": 10})
     
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()

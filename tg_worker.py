@@ -19,10 +19,9 @@ from app.core.rabbitmq import mq
 from app.db.session import AsyncSessionLocal
 from app.db.models import Dialogue, Candidate, Account, JobContext
 from app.services.sheets import sheets_service
-
+from app.utils.logger import logger, set_log_context, log_context
 # Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("ReportingWorker")
+
 
 bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
 storage = MemoryStorage()
@@ -156,9 +155,15 @@ async def send_tg_notification(dialogue: Dialogue, candidate: Candidate, vacancy
             message_thread_id=target_topic_id,
             parse_mode="MarkdownV2"
         )
-        logger.info(f"✅ Карточка по диалогу {dialogue.id} отправлена в TG")
+        logger.info(
+            "✅ Карточка кандидата отправлена в TG", 
+            extra={
+                "target_chat": target_chat_id,
+                "candidate": candidate.full_name
+            }
+        )
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки в TG: {e}")
+        logger.exception("❌ Ошибка отправки карточки в TG")
 
 async def handle_reporting_task(message_body: dict):
     """Диспетчер задач отчетности (TG + Google Sheets)"""
@@ -197,6 +202,7 @@ async def handle_reporting_task(message_body: dict):
                     target_time=meta.get("interview_time"),
                     candidate_name=candidate.full_name or "Аноним Авито"
                 )
+                logger.info("📊 Слот в Google Sheets забронирован")
                 # 2. Google Sheets: Добавляем кандидата в список
                 await sheets_service.append_candidate({
                     "full_name": candidate.full_name,
@@ -206,6 +212,7 @@ async def handle_reporting_task(message_body: dict):
                     "interview_dt": f"{meta.get('interview_date')} {meta.get('interview_time')}",
                     "status": "Записан ботом"
                 })
+                logger.info("📊 Кандидат добавлен в таблицу")
                 # 3. Telegram: Отправляем уведомление
                 await send_tg_notification(dialogue, candidate, vacancy, account)
 
@@ -245,8 +252,14 @@ async def run_alerts_consumer():
         async for message in queue_iter:
             # ДОБАВЛЯЕМ ignore_processed=True
             async with message.process(ignore_processed=True):
+                log_context.set({})
                 try:
                     payload = json.loads(message.body.decode())
+                    set_log_context(
+                        service="alerts",
+                        alert_type=payload.get("type"),
+                        dialogue_id=payload.get("dialogue_id")
+                    )
                     await handle_alert_task(payload)
                     # Если дошли сюда - все ок, process() сам отправит ack() при выходе
                     
@@ -256,7 +269,7 @@ async def run_alerts_consumer():
                     await message.reject(requeue=False)
 
                 except Exception as e:
-                    logger.error(f"💥 Ошибка обработки алерта: {e}")
+                    logger.exception("💥 Ошибка обработки системного алерта")
                     logger.info("♻️ Возвращаем сообщение в очередь (NACK)...")
                     # ВОТ ОНО: Возвращаем в очередь
                     await message.nack(requeue=True)
@@ -274,11 +287,16 @@ async def run_rabbitmq_consumer():
             # ДОБАВЛЯЕМ ignore_processed=True
             async with message.process(ignore_processed=True):
                 # --- ДОБАВЛЕНА ЗАДЕРЖКА ---
-                    
+                log_context.set({})
                 await asyncio.sleep(10) 
                     # --- КОНЕЦ ДОБАВЛЕННОЙ ЗАДЕРЖКИ ---
                 try:
                     payload = json.loads(message.body.decode())
+                    set_log_context(
+                        service="reporting",
+                        event_type=payload.get("type"),
+                        dialogue_id=payload.get("dialogue_id")
+                    )
                     await handle_reporting_task(payload)
                     
                 except json.JSONDecodeError:
@@ -286,7 +304,7 @@ async def run_rabbitmq_consumer():
                     await message.reject(requeue=False)
 
                 except Exception as e:
-                    logger.error(f"💥 Ошибка в Reporting Worker: {e}")
+                    logger.exception("💥 Ошибка в Reporting Worker")
                     logger.info("♻️ Возвращаем сообщение в очередь (NACK)...")
                     # ВОТ ОНО: Возвращаем в очередь
                     await message.nack(requeue=True)

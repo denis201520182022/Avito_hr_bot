@@ -18,3 +18,4 @@ google-auth
 google-api-python-client
 pandas
 openpyxl
+python-json-logger

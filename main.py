@@ -7,13 +7,10 @@ from fastapi import FastAPI, Request, Header, Response
 from app.connectors.avito import avito_connector, avito
 from app.core.rabbitmq import mq
 from app.core.config import settings
+import uuid # понадобится для request_id
+from app.utils.logger import logger, set_log_context, log_context
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("FastAPI")
+
 
 # --- ДОБАВЬТЕ ЭТУ СТРОКУ ---
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -24,7 +21,7 @@ async def lifespan(app: FastAPI):
     Управление жизненным циклом приложения.
     Здесь запускаются и останавливаются все фоновые процессы.
     """
-    logger.info("🚀 Запуск HR-платформы...")
+    logger.info("🚀 Запуск HR-платформы...", extra={"env": os.getenv("DOCKER_MODE")})
     
     try:
         # 1. Подключаемся к RabbitMQ
@@ -40,7 +37,7 @@ async def lifespan(app: FastAPI):
         await avito_connector.start()
     except Exception as e:
         error_msg = f"❌ Не удалось запустить Avito Connector: {e}"
-        logger.error(error_msg)
+        logger.exception("Сообщение об ошибке")
         # Шлем через очередь, так как MQ уже подключен
         await mq.publish("tg_alerts", {"type": "system", "text": error_msg})
 
@@ -61,12 +58,33 @@ async def lifespan(app: FastAPI):
     
     logger.info("👋 Бот полностью остановлен")
 
+
+
 # Инициализация FastAPI
 app = FastAPI(
     title="AI HR Platform", 
     version="2.0.0",
     lifespan=lifespan
 )
+
+@app.middleware("http")
+async def log_requests_middleware(request: Request, call_next):
+    # 1. Очищаем контекст перед новым запросом
+    log_context.set({})
+    
+    # 2. Устанавливаем базовый контекст запроса
+    set_log_context(
+        request_id=str(uuid.uuid4()),
+        method=request.method,
+        path=request.url.path,
+        ip=request.client.host if request.client else "unknown"
+    )
+    
+    response = await call_next(request)
+    return response
+
+
+
 
 @app.post("/webhooks/avito")
 async def avito_webhook_handler(
@@ -100,7 +118,8 @@ async def avito_webhook_handler(
     inner_payload = payload.get("payload", {})
     inner_value = inner_payload.get("value", {})
     avito_user_id = inner_value.get("user_id")
-
+    if avito_user_id:
+        set_log_context(avito_user_id=str(avito_user_id))
     # Резервный вариант: если Авито пришлет ID в корне (как в старых версиях)
     if not avito_user_id:
         avito_user_id = payload.get("user_id")
@@ -125,7 +144,7 @@ async def avito_webhook_handler(
 
     except Exception as e:
         error_msg = f"❌ ПОТЕРЯ ДАННЫХ: Не удалось записать вебхук Авито в очередь!\n{e}"
-        logger.error(error_msg)
+        logger.exception("Сообщение об ошибке")
         await mq.publish("tg_alerts", {"type": "system", "text": error_msg})
         return Response(status_code=500)
 

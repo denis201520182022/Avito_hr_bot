@@ -14,12 +14,7 @@ from app.db.models import Dialogue, InterviewReminder
 from app.services.knowledge_base import kb_service
 from sqlalchemy.orm import selectinload
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("Scheduler")
+from app.utils.logger import logger, set_log_context, log_context
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
@@ -76,6 +71,13 @@ class Scheduler:
                     dialogues = result.scalars().all()
 
                     for dialogue in dialogues:
+                        # 1. СБРОС И УСТАНОВКА КОНТЕКСТА ДЛЯ КОНКРЕТНОГО ДИАЛОГА
+                        log_context.set({})
+                        set_log_context(
+                            dialogue_id=dialogue.id,
+                            candidate_id=dialogue.candidate_id,
+                            task="silence_reminder"
+                        )
                         # --- А. ОПРЕДЕЛЯЕМ ЧАСОВОЙ ПОЯС КАНДИДАТА ---
                         profile = dialogue.candidate.profile_data or {}
                         tz_name = profile.get("timezone", qt_cfg.default_timezone)
@@ -159,6 +161,7 @@ class Scheduler:
             except Exception as e:
                 error_msg = f"❌ Ошибка в цикле молчунов Scheduler:\n{str(e)}"
                 logger.error(error_msg, exc_info=True)
+                logger.exception("❌ Ошибка в цикле молчунов")
                 try:
                     await mq.publish("tg_alerts", {"type": "system", "text": error_msg, "alert_type": "admin_only"})
                 except: pass
@@ -199,6 +202,12 @@ class Scheduler:
                     reminders = result.scalars().all()
 
                     for rem in reminders:
+                        log_context.set({})
+                        set_log_context(
+                            dialogue_id=rem.dialogue_id,
+                            reminder_type=rem.reminder_type,
+                            task="interview_reminder"
+                        )
                         # 2. Ищем конфиг по ID (теперь через поиск в списке items)
                         reminder_cfg = next(
                             (item for item in settings.reminders.interview.items if item.id == rem.reminder_type), 
@@ -255,6 +264,7 @@ class Scheduler:
             except Exception as e:
                 error_msg = f"❌ Ошибка в цикле собеседований Scheduler:\n{str(e)}"
                 logger.error(error_msg, exc_info=True)
+                logger.exception("❌ Ошибка в цикле собесов")
                 try:
                     await mq.publish("tg_alerts", {
                         "type": "system", "text": error_msg, "alert_type": "admin_only"
@@ -281,7 +291,7 @@ class Scheduler:
 
             except Exception as e:
                 error_msg = f"❌ Ошибка в цикле поиска Scheduler:\n{str(e)}"
-                logger.error(error_msg, exc_info=True)
+                logger.exception("❌ Ошибка в цикле поиска")
                 try:
                     await mq.publish("tg_alerts", {"type": "system", "text": error_msg, "alert_type": "admin_only"})
                 except: pass
@@ -293,11 +303,12 @@ class Scheduler:
         """Обновление промптов каждые 3 минуты"""
         while self.is_running:
             try:
-                logger.info("🔄 Обновление библиотеки промптов из Google Docs...")
+                logger.debug("🔄 Обновление библиотеки промптов из Google Docs...")
                 await kb_service.refresh_cache()
+                logger.debug("✅ База знаний успешно обновлена")
             except Exception as e:
                 error_msg = f"❌ Ошибка обновления базы знаний (Google Docs):\n{str(e)}"
-                logger.error(error_msg)
+                logger.exception("❌ Ошибка обновления базы знаний")
                 # Отправка алерта
                 try:
                     await mq.publish("tg_alerts", {

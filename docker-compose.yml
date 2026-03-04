@@ -10,14 +10,12 @@ services:
       - .env
     # --- ДОБАВЬ ВОТ ЭТОТ БЛОК ---
     environment:
-      # Переопределяем хосты для внутренней сети Docker
+      # Здесь мы просто подтверждаем использование переменных из .env
+      - DATABASE_URL=${DATABASE_URL}
+      - RABBITMQ_URL=${RABBITMQ_URL}
+      - REDIS_URL=${REDIS_URL}
       - DB_HOST=pgbouncer
       - DB_PORT=6432
-      # Важно: переписываем полные URL, так как бот может использовать их
-      - DATABASE_URL=postgresql+asyncpg://ozer_user:jkbfwfg283trwfig@pgbouncer:6432/ozer_bot_db
-      - RABBITMQ_URL=amqp://user:password@rabbitmq:5672/
-      # Обрати внимание: порт Redis внутри сети - 6379 (6381 только снаружи)
-      - REDIS_URL=redis://redis:6379/0
     # ---------------------------
     volumes:
       - ./logs:/app/logs  # Логи пишутся в папку logs в корне проекта
@@ -38,12 +36,12 @@ services:
     image: rabbitmq:3-management
     container_name: avito_bot_rabbitmq
     restart: always
-    ports:
-      - "5672:5672"
-      - "15672:15672"
+    # ports:
+    #   - "5672:5672"
+    #   - "15672:15672"
     environment:
-      RABBITMQ_DEFAULT_USER: user
-      RABBITMQ_DEFAULT_PASS: password
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
     volumes:
       - avito_rabbitmq_data:/var/lib/rabbitmq # Железное сохранение очередей
     networks:
@@ -61,8 +59,8 @@ services:
     restart: always
     # Включаем AOF (Append Only File) для надежности данных при перезагрузке
     command: redis-server --appendonly yes
-    ports:
-      - "6381:6379"
+    # ports:
+    #   - "6381:6379"
     volumes:
       - avito_redis_data:/data # Железное сохранение данных
     networks:
@@ -90,8 +88,8 @@ services:
       - LISTEN_PORT=6432
       - AUTH_TYPE=scram-sha-256
       - IGNORE_STARTUP_PARAMETERS=extra_float_digits,client_encoding
-    ports:
-      - "6434:6432"
+    # ports:
+    #   - "6434:6432"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

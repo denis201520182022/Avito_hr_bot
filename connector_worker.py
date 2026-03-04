@@ -7,9 +7,7 @@ from aio_pika import IncomingMessage
 from app.core.rabbitmq import mq
 from app.connectors.avito import avito_connector
 from app.db.session import engine
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("ConnectorWorker")
+from app.utils.logger import logger, set_log_context, log_context
 
 async def on_avito_inbound(message: IncomingMessage):
     """
@@ -18,6 +16,7 @@ async def on_avito_inbound(message: IncomingMessage):
     """
     async with message.process(ignore_processed=True):
         # 1. Сначала пытаемся распарсить JSON
+        log_context.set({})
         try:
             body = json.loads(message.body.decode())
         except json.JSONDecodeError:
@@ -27,6 +26,11 @@ async def on_avito_inbound(message: IncomingMessage):
 
         # 2. Обрабатываем событие
         try:
+            set_log_context(
+                source=body.get("source"),
+                event_type=body.get("type"),
+                avito_user_id=body.get("avito_user_id")
+            )
             logger.info(f"📥 [Connector] Унификация события от Avito (Source: {body.get('source')})")
             await avito_connector.process_avito_event(body)
             
@@ -36,7 +40,7 @@ async def on_avito_inbound(message: IncomingMessage):
         except Exception as e:
             # Логируем ошибку
             error_msg = f"❌ Ошибка в Унификаторе (Avito):\n{str(e)}"
-            logger.error(error_msg, exc_info=True)
+            logger.exception("❌ Ошибка при унификации события Avito")
             
             # --- ОТПРАВКА АЛЕРТА В TG ВОРКЕР (твоя исходная логика) ---
             try:
@@ -64,7 +68,7 @@ async def main():
     inbound_queue = await channel.get_queue("avito_inbound")
     await inbound_queue.consume(on_avito_inbound)
 
-    logger.info("👷 Connector Worker (Unificator) запущен.")
+    logger.info("👷 Connector Worker запущен", extra={"prefetch_count": 50})
     
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()

@@ -95,3 +95,11 @@ BEGIN
     END IF;
 
 END $$;
+
+
+
+
+
+
+
+docker logs -f avito_hr_bot
