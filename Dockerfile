@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 # Установка системных зависимостей + Supervisor
 # curl нужен для healthcheck, libpq-dev для postgres
