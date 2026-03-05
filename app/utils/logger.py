@@ -20,7 +20,7 @@ class CustomJsonFormatter(jsonlogger.JsonFormatter):
         # 2. Стандартные поля
         if not log_record.get('timestamp'):
             log_record['timestamp'] = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-        log_record['level'] = log_record.get('level', record.levelname).upper()
+        log_record['level'] = str(log_record.get('level', record.levelname) or "INFO").upper()
 
 # Функция-помощник для установки контекста
 def set_log_context(**kwargs):
