@@ -1405,12 +1405,17 @@ class Engine:
                 
                 # Записываем ответ про патент, если он пришел (обычно в стейте clarifying_citizenship)
                 if extracted_data.get("has_patent"):
-                     # ДОБАВИТЬ ЭТУ ПРОВЕРКУ:
-                     if current_state_at_update == 'clarifying_anything' and profile.get("has_patent"):
-                         ctx_logger.debug("Защита: патент уже есть, не перезаписываем")
-                     else:
-                         profile["has_patent"] = extracted_data["has_patent"]
-                         changed = True
+                    # Добавь ту же проверку, что и для гражданства!
+                    allowed_cit_states = ['awaiting_citizenship', 'clarifying_citizenship', 'clarifying_anything']
+                    
+                    if current_state_at_update in allowed_cit_states:
+                        if current_state_at_update == 'clarifying_anything' and profile.get("has_patent"):
+                            ctx_logger.debug("Защита: патент уже есть, не перезаписываем")
+                        else:
+                            profile["has_patent"] = extracted_data["has_patent"]
+                            changed = True
+                    else:
+                        ctx_logger.debug(f"Игнорируем патент: стейт {current_state_at_update} не разрешает.")
 
                 # --- 13.3 ОСТАЛЬНЫЕ ПОЛЯ (Маппинг стейтов как в HH) ---
                 
@@ -1445,8 +1450,13 @@ class Engine:
                              ctx_logger.debug(f"Игнорируем {field_key}='{val}': стейт {current_state_at_update} не разрешает.")
                 if changed:
                     dialogue.candidate.profile_data = profile
-                    # --- НОВАЯ ЛОГИКА: МГНОВЕННЫЙ ЧЕК ---
-                    is_ok, reason = self._check_eligibility(profile)
+                    is_ok = True 
+                    reason = None
+                    # ПРОВЕРЯЕМ НА ОТКАЗ ТОЛЬКО ЕСЛИ МЫ ЕЩЕ НЕ В ПРОЦЕССЕ ЗАПИСИ
+                    SCHEDULING_STATES = ['init_scheduling_spb', 'scheduling_spb_day', 'scheduling_spb_time', 'interview_scheduled_spb']
+                    
+                    if current_state_at_update not in SCHEDULING_STATES:
+                        is_ok, reason = self._check_eligibility(profile)
                     if not is_ok:
                         ctx_logger.info(f"⛔ МГНОВЕННЫЙ ОТКАЗ: {reason}. Прерываем анкету.")
                         new_state = 'qualification_failed'
