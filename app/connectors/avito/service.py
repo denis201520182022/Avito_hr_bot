@@ -30,7 +30,7 @@ class AvitoConnectorService:
         self.is_running = True
         logger.info("🚀 Запуск Avito Connector Service...")
         await self._setup_all_webhooks()
-        self._poll_task = asyncio.create_task(self._poll_loop())
+        #self._poll_task = asyncio.create_task(self._poll_loop())
 
     async def stop(self):
         logger.info("🛑 Остановка Avito Connector Service...")
@@ -331,7 +331,7 @@ class AvitoConnectorService:
 
             # 2. Отправка в Engine (мозги)
             if dialogue:
-                TERMINAL_STATUSES = ['rejected', 'closed']
+                TERMINAL_STATUSES = ['rejected']
                 if dialogue.status in TERMINAL_STATUSES:
                     logger.info(f"🤐 Чат {external_chat_id} в статусе {dialogue.status}. Молчим.")
                 else:
