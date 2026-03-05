@@ -499,13 +499,15 @@ class Engine:
         
         state_map = {
             'initial': ['#QUALIFICATION_RULES#', '#FAQ#'],
-            'awaiting_questions': ['#QUALIFICATION_RULES#', '#FAQ#'],
-            'awaiting_phone': ['#QUALIFICATION_RULES#'],
-            'awaiting_citizenship': ['#QUALIFICATION_RULES#'],
-            'clarifying_citizenship': ['#QUALIFICATION_RULES#', '#CLARI#'],
-            'awaiting_age': ['#QUALIFICATION_RULES#'],
-            'clarifying_anything': ['#QUALIFICATION_RULES#'],
-            'qualification_complete': ['#QUALIFICATION_RULES#'],
+            'awaiting_questions': ['#QUALIFICATION_RULES#', '#FAQ#', '#DECLINED_VAC#'],
+            'awaiting_phone': ['#QUALIFICATION_RULES#', '#DECLINED_VAC#'],
+            'awaiting_fio': ['#QUALIFICATION_RULES#', '#DECLINED_VAC#'],
+            
+            'awaiting_citizenship': ['#QUALIFICATION_RULES#', '#DECLINED_VAC#'],
+            'clarifying_citizenship': ['#QUALIFICATION_RULES#', '#CLARI#', '#DECLINED_VAC#'],
+            'awaiting_age': ['#QUALIFICATION_RULES#', '#DECLINED_VAC#'],
+            'clarifying_anything': ['#QUALIFICATION_RULES#', '#DECLINED_VAC#'],
+            'qualification_complete': ['#QUALIFICATION_RULES#', '#DECLINED_VAC#'],
 
             'init_scheduling_spb': ['#SCHEDULING_ALGORITHM#'],
             'scheduling_spb_day': ['#SCHEDULING_ALGORITHM#'],
@@ -732,6 +734,7 @@ class Engine:
                 "state": dialogue.current_state
             })
 
+
             ctx_logger.debug(
                 f"Processing dialogue {dialogue.external_chat_id}...",
                 extra={"action": "start_processing", "fetch_time": time.monotonic() - db_fetch_start}
@@ -840,10 +843,15 @@ class Engine:
                 # Маскируем и пытаемся вытащить телефон/ФИО регулярками
                 masked_content, extracted_fio, extracted_phone = extract_and_mask_pii(original_content)
 
-                # Если нашли телефон регуляркой - сразу пишем в кандидата
+                # --- ИЗВЛЕЧЕНИЕ ДАННЫХ РЕГУЛЯРКАМИ (Pre-LLM) ---
                 if extracted_phone:
                     dialogue.candidate.phone_number = extracted_phone
                     ctx_logger.info(f"📞 Извлечен телефон из текста: {extracted_phone}")
+
+                if extracted_fio:
+                    # Записываем ФИО, если оно найдено регуляркой
+                    dialogue.candidate.full_name = extracted_fio
+                    ctx_logger.info(f"👤 Извлечено ФИО из текста: {extracted_fio}")
 
                 # Собираем текст для отправки в LLM
                 all_masked_content.append(masked_content)
@@ -982,6 +990,7 @@ class Engine:
                 'initial', 
                 'awaiting_questions', 
                 'awaiting_phone', 
+                'awaiting_fio',
                 'awaiting_citizenship', 
                 'clarifying_citizenship',
                 'awaiting_age',

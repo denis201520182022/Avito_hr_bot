@@ -225,12 +225,13 @@ class AvitoConnectorService:
         external_chat_id = None
         resume_id = None
         item_id = None
-
+        avito_author_id = None  # Добавляем переменную для хранения ID юзера
         # 1. Извлекаем базовые ID из разных источников
         if source == "avito_webhook":
             msg_val = payload.get("payload", {}).get("value", {})
             external_chat_id = msg_val.get("chat_id")
             item_id = msg_val.get("item_id")
+            avito_author_id = str(msg_val.get("author_id"))
             if external_chat_id:
                 set_log_context(chat_id=external_chat_id)
 
@@ -252,6 +253,7 @@ class AvitoConnectorService:
             external_chat_id = contacts.get("chat", {}).get("value")
             resume_id = str(payload.get("applicant", {}).get("resume_id"))
             item_id = payload.get("vacancy_id")
+            avito_author_id = str(payload.get("applicant", {}).get("user_id"))
             if external_chat_id:
                 set_log_context(chat_id=external_chat_id)
         elif source == "avito_search_found":
@@ -289,7 +291,7 @@ class AvitoConnectorService:
                     except Exception as e:
                         # ЕСЛИ НЕ НАШЛИ (это обычное объявление), создаем временный ID
                         logger.warning(f"ℹ️ Это не отклик на вакансию ({e}). Создаю тестового кандидата.")
-                        resume_id = f"test_guest_{external_chat_id[-8:]}"
+                        resume_id = avito_author_id
 
                 # Ищем или создаем кандидата
                 candidate = await db.scalar(select(Candidate).filter_by(platform_user_id=resume_id))
@@ -299,11 +301,11 @@ class AvitoConnectorService:
                     await db.flush()
 
                 # Попытка обогатить данными (пропустит, если это не резюме)
-                try:
-                    if not resume_id.startswith("test_guest_"):
-                        resume_data = await avito.get_resume_details(account, db, resume_id)
-                        self._enrich_from_resume(candidate, resume_data)
-                except: pass
+                # try:
+                #     if not resume_id.startswith("test_guest_"):
+                #         resume_data = await avito.get_resume_details(account, db, resume_id)
+                #         self._enrich_from_resume(candidate, resume_data)
+                # except: pass
 
                 # Получаем вакансию (если есть)
                 job_context = None
@@ -513,7 +515,7 @@ class AvitoConnectorService:
             return dialogue
 
         # === НОВЫЙ ЛИД: ПЕРВИЧНОЕ ЗАПОЛНЕНИЕ ДАННЫХ ИЗ АВИТО ===
-        self._enrich_candidate_from_avito_payload(candidate, payload)
+        # self._enrich_candidate_from_avito_payload(candidate, payload)
 
         # === БИЛЛИНГ: СПИСАНИЕ СРЕДСТВ ===
         settings_stmt = select(AppSettings).filter_by(id=1).with_for_update()
