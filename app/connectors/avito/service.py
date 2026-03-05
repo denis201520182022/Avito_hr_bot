@@ -296,9 +296,20 @@ class AvitoConnectorService:
                 # Ищем или создаем кандидата
                 candidate = await db.scalar(select(Candidate).filter_by(platform_user_id=resume_id))
                 if not candidate:
-                    candidate = Candidate(platform_user_id=resume_id, profile_data={"note": "Created from direct chat"})
-                    db.add(candidate)
-                    await db.flush()
+                    try:
+                        # Используем savepoint, чтобы ошибка в этом блоке не роняла всю транзакцию
+                        async with db.begin_nested():
+                            candidate = Candidate(
+                                platform_user_id=resume_id, 
+                                profile_data={"note": "Created from direct chat"}
+                            )
+                            db.add(candidate)
+                            await db.flush()
+                    except Exception:
+                        # Если пока мы создавали, кто-то другой уже создал — просто подтягиваем существующего
+                        candidate = await db.scalar(select(Candidate).filter_by(platform_user_id=resume_id))
+                        if not candidate:
+                            raise # Если всё равно нет, значит ошибка серьезнее
 
                 # Попытка обогатить данными (пропустит, если это не резюме)
                 # try:

@@ -69,6 +69,20 @@ class Engine:
                 lines.append(f"{role}: {content}")
         return "\n".join(lines)
     
+    def _is_technical_message(self, content: Any) -> bool:
+        """Определяет, является ли сообщение системным/техническим мусором."""
+        if not isinstance(content, str):
+            return False
+        
+        content_strip = content.strip()
+        # Список маркеров, которые мы не хотим показывать LLM
+        forbidden_markers = [
+            
+            "[Системное сообщение]"
+        ]
+        
+        return any(marker in content_strip for marker in forbidden_markers)
+    
     async def _get_human_slots_block(self) -> str:
         """Формирует текстовый блок со свободными слотами для промпта."""
         all_slots = await sheets_service.get_all_slots_map()
@@ -232,6 +246,8 @@ class Engine:
         for m in history_messages:
             content = m.get('content', '')
             # Пропускаем технические команды
+            if self._is_technical_message(content):
+                continue
             if isinstance(content, str) and content.startswith('[SYSTEM COMMAND]'):
                 continue
             
@@ -903,8 +919,14 @@ class Engine:
             attempt_tracker = [] # Ловушка для попыток (tenacity)
 
             try:
-                # Берем историю для контекста (последние 25 сообщений)
-                history_for_llm = (dialogue.history or [])[-25:]
+                raw_history = dialogue.history or []
+                # Фильтруем И мусор Авито, И системные команды бота
+                clean_history = [
+                    msg for msg in raw_history 
+                    if not self._is_technical_message(msg.get('content', '')) 
+                    
+                ]
+                history_for_llm = clean_history[-25:]
                 
                 # ВАЖНО: Добавлен аргумент current_datetime_utc, как в HH
                 llm_data = await get_bot_response(
@@ -1520,9 +1542,13 @@ class Engine:
                     # Подготовка истории (последние 20 сообщений)
                     clean_history_lines = []
                     for m in (dialogue.history or []):
-                        if not str(m.get('content', '')).startswith('[SYSTEM'):
+                        content = m.get('content', '')
+                        # Фильтруем мусор и системные команды
+                        if self._is_technical_message(content):
+                            continue
+                        if not str(content).startswith('[SYSTEM'):
                             role = "Кандидат" if m.get('role') == 'user' else "Бот"
-                            clean_history_lines.append(f"{role}: {m.get('content')}")
+                            clean_history_lines.append(f"{role}: {content}")
                     recent_history_text = "\n".join(clean_history_lines[-20:])
 
                     # Генерируем динамическую инструкцию по формату JSON
@@ -1614,9 +1640,13 @@ class Engine:
                 all_msgs_for_verify = (dialogue.history or [])
                 verify_history_lines = []
                 for m in all_msgs_for_verify:
-                    if not str(m.get('content', '')).startswith('[SYSTEM'):
+                    content = m.get('content', '')
+                    # Фильтруем через твой метод + старый фильтр
+                    if self._is_technical_message(content):
+                        continue
+                    if not str(content).startswith('[SYSTEM'):
                         label = "Кандидат" if m.get('role') == 'user' else "Бот"
-                        verify_history_lines.append(f"{label}: {m.get('content')}")
+                        verify_history_lines.append(f"{label}: {content}")
                 
                 full_history_text = "\n".join(verify_history_lines)
 
@@ -1781,7 +1811,12 @@ class Engine:
                             event_type='rejected_by_bot',
                             event_data={
                                 "reason": "eligibility_failed",
-                                "details": {"age": age, "cit": citizenship, "patent": has_patent, "crim": criminal}
+                                "details": {
+                                    "age": profile.get("age"), 
+                                    "cit": profile.get("citizenship"), 
+                                    "patent": profile.get("has_patent"), 
+                                    "crim": profile.get("criminal_record")
+                                }
                             }
                         ))
                         ctx_logger.info(f"✅ Записано событие 'rejected_by_bot' для диалога {dialogue.id}.")
@@ -1937,12 +1972,15 @@ class Engine:
                     clean_history_with_roles = []
                     for m in all_msgs:
                         content = m.get('content', '')
+                        # Добавляем твою фильтрацию
+                        if self._is_technical_message(content):
+                            continue
                         if not str(content).startswith("[SYSTEM"):
                             role_label = "Кандидат" if m.get('role') == 'user' else "Бот"
                             clean_history_with_roles.append(f"{role_label}: {content}")
                     
                     recent_context = "\n".join(clean_history_with_roles[-20:])
-                    
+
                     clarification_prompt = (
                         'Проанализируй диалог и определи: действительно ли кандидат чётко отказался от вакансии? '
                         'Смотри только на реплики с пометкой "Кандидат". '
