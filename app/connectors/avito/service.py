@@ -145,7 +145,11 @@ class AvitoConnectorService:
 
             # Контент: используем наш общий парсер
             content_text = self._parse_message_content(msg_data.get("content", {}))
-
+            # --- ДОБАВИТЬ ЭТУ ПРОВЕРКУ ---
+            if content_text.strip().startswith("[Системное сообщение]"):
+                logger.info(f"🚫 Игнорируем системное сообщение из вебхука в чате {dialogue.external_chat_id}")
+                return # Просто выходим, не добавляя в историю
+            
             new_entry = {
                 "role": role,
                 "content": content_text,
@@ -636,7 +640,9 @@ class AvitoConnectorService:
                     
                     # ИСПОЛЬЗУЕМ ОБЩИЙ ПАРСЕР (который мы исправили в шаге 1)
                     text_content = self._parse_message_content(msg.get("content", {}))
-
+                    if text_content.strip().startswith("[Системное сообщение]"):
+                        continue # Пропускаем это сообщение и идем к следующему
+                    # -----------------------------
                     entry = {
                         "role": role,
                         "content": text_content,
