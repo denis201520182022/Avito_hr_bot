@@ -65,7 +65,10 @@ class Engine:
         for entry in (dialogue.history or []):
             role = "👤 Кандидат" if entry.get('role') == 'user' else "🤖 Бот"
             content = entry.get('content', '')
-            if not str(content).startswith('[SYSTEM'): # Пропускаем системные команды
+            content_str = str(content)
+            
+            # ФИЛЬТР: Пропускаем и системные команды бота, и мусор Авито
+            if not content_str.startswith('[SYSTEM') and not content_str.startswith('[Системное сообщение]'):
                 lines.append(f"{role}: {content}")
         return "\n".join(lines)
     

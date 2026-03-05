@@ -5,6 +5,8 @@ import io
 import datetime
 import time
 from aiogram import Bot
+import html  # Импортируем стандартную библиотеку для экранирования HTML
+from aiogram.types import BufferedInputFile # (предполагая использование aiogram 3.x)
 from aiogram.types import BufferedInputFile
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -87,7 +89,10 @@ def format_history_txt(dialogue: Dialogue, candidate: Candidate, vacancy: JobCon
     for entry in (dialogue.history or []):
         role = entry.get('role')
         content = entry.get('content', '')
-        if not content or str(content).startswith('[SYSTEM'):
+        content_str = str(content)
+        
+        # ФИЛЬТР: Пропускаем пустые, системные команды [SYSTEM и мусор [Системное сообщение]
+        if not content_str or content_str.startswith('[SYSTEM') or content_str.startswith('[Системное сообщение]'):
             continue
             
         ts = entry.get('timestamp_utc', '')
@@ -108,7 +113,7 @@ def format_history_txt(dialogue: Dialogue, candidate: Candidate, vacancy: JobCon
 
 
 async def send_tg_notification(dialogue: Dialogue, candidate: Candidate, vacancy: JobContext, account: Account):
-    """Логика формирования и отправки карточки в Telegram"""
+    """Логика формирования и отправки карточки в Telegram (HTML version)"""
     profile = candidate.profile_data or {}
     tg_settings = account.settings or {}
     target_chat_id = tg_settings.get("tg_chat_id")
@@ -119,28 +124,26 @@ async def send_tg_notification(dialogue: Dialogue, candidate: Candidate, vacancy
         return
 
     def esc(text):
-        if not text: return "—"
-        # Список символов, которые ОБЯЗАТЕЛЬНО нужно экранировать в MarkdownV2
-        chars = r"_*[]()~`>#+-=|{}.!"
-        res = str(text)
-        for c in chars:
-            res = res.replace(c, f"\\{c}")
-        return res
+        """Безопасное экранирование текста для HTML"""
+        if text is None or text == "": 
+            return "—"
+        return html.escape(str(text))
     
     meta = dialogue.metadata_json or {}
     avito_link = f"https://www.avito.ru/profile/messenger/channel/{dialogue.external_chat_id}"
     
+    # Формируем текст с использованием HTML-тегов
     message_text = (
-        f"🚀 *Новый кандидат \(Авито\)*\n\n"
-        f"📌 *Вакансия:* {esc(vacancy.title if vacancy else 'Не указана')}\n"
-        f"📍 *Город:* {esc(profile.get('city', 'Не указан'))}\n\n"
-        f"👤 *ФИО:* {esc(candidate.full_name)}\n"
-        f"📞 *Телефон:* `{esc(candidate.phone_number)}`\n"
-        f"🎂 *Возраст:* {esc(profile.get('age'))}\n"
-        f"🌍 *Гражданство:* {esc(profile.get('citizenship'))}\n"
-        f"📜 *Патент:* {esc(profile.get('has_patent'))}\n\n"
-        f"📅 *Собеседование:* {esc(meta.get('interview_date'))} в {esc(meta.get('interview_time'))}\n\n"
-        f"🔗 [Открыть чат в Авито]({avito_link})"
+        f"🚀 <b>Новый кандидат (Авито)</b>\n\n"
+        f"📌 <b>Вакансия:</b> {esc(vacancy.title if vacancy else 'Не указана')}\n"
+        f"📍 <b>Город:</b> {esc(profile.get('city', 'Не указан'))}\n\n"
+        f"👤 <b>ФИО:</b> {esc(candidate.full_name)}\n"
+        f"📞 <b>Телефон:</b> <code>{esc(candidate.phone_number)}</code>\n"
+        f"🎂 <b>Возраст:</b> {esc(profile.get('age'))}\n"
+        f"🌍 <b>Гражданство:</b> {esc(profile.get('citizenship'))}\n"
+        f"📜 <b>Патент:</b> {esc(profile.get('has_patent'))}\n\n"
+        f"📅 <b>Собеседование:</b> {esc(meta.get('interview_date'))} в {esc(meta.get('interview_time'))}\n\n"
+        f"🔗 <a href='{avito_link}'>Открыть чат в Авито</a>"
     )
 
     history_text = format_history_txt(dialogue, candidate, vacancy)
@@ -153,7 +156,7 @@ async def send_tg_notification(dialogue: Dialogue, candidate: Candidate, vacancy
             document=document,
             caption=message_text,
             message_thread_id=target_topic_id,
-            parse_mode="MarkdownV2"
+            parse_mode="HTML"  # Указываем HTML вместо MarkdownV2
         )
         logger.info(
             "✅ Карточка кандидата отправлена в TG", 
@@ -163,7 +166,7 @@ async def send_tg_notification(dialogue: Dialogue, candidate: Candidate, vacancy
             }
         )
     except Exception as e:
-        logger.exception("❌ Ошибка отправки карточки в TG")
+        logger.exception(f"❌ Ошибка отправки карточки в TG: {e}")
 
 async def handle_reporting_task(message_body: dict):
     """Диспетчер задач отчетности (TG + Google Sheets)"""
