@@ -7,6 +7,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import select, update
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 from aiogram.utils.formatting import Text, Bold, Italic, Code
@@ -99,7 +100,12 @@ async def limits_menu(message: Message, session: AsyncSession):
         return
 
     # Тянем статусы поиска (наши рубильники)
-    status_stmt = select(AvitoSearchStatus).join(Account)
+    # Мы добавляем .options(selectinload(AvitoSearchStatus.account))
+    # Это заставит SQLAlchemy достать данные аккаунта ОДНИМ запросом вместе со статусом
+    status_stmt = (
+        select(AvitoSearchStatus)
+        .options(selectinload(AvitoSearchStatus.account))
+    )
     statuses = (await session.execute(status_stmt)).scalars().all()
 
     stats = settings.stats or {}

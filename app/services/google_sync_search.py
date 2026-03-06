@@ -132,12 +132,23 @@ class GoogleSyncSearchService:
                 ws.batch_clear(["C2:ZZ27"])
                 
                 if new_sheet_columns:
-                    # Транспонируем: список колонок в список строк для записи
+                    # Транспонируем колонки в строки
                     rows_to_update = list(zip(*new_sheet_columns))
+                    
+                    # Сначала «затираем» старые данные пробелами (до 30-го столбца)
+                    # Это удалит старые вакансии, но сохранит серые списки и цвета
+                    # Создаем пустую строку длиной 30 (от колонки C до AF)
+                    empty_row = [""] * 30
+                    # Делаем список из 26 таких пустых строк
+                    clear_matrix = [empty_row for _ in range(26)]
+                    
+                    # Записываем сначала пустоту, а потом сразу новые данные
+                    # ws.update(диапазон, данные) в gspread не удаляет выпадающие списки!
+                    ws.update("C2", clear_matrix)
                     ws.update("C2", rows_to_update)
 
                 await db.commit()
-                logger.info("✅ Синхронизация AvitoSearch завершена (индексы исправлены)")
+                logger.info("✅ Синхронизация завершена. Данные обновлены, форматирование сохранено.")
 
         except Exception as e:
             logger.error(f"❌ Ошибка синхронизации AvitoSearch: {e}", exc_info=True)
