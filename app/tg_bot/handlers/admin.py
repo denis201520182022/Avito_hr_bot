@@ -18,7 +18,7 @@ from app.db.models import (
     Account, 
     JobContext, 
     Candidate, 
-    AvitoSearchQuota, 
+    AvitoSearchStatus, # <--- Заменить
     AvitoSearchStat
 )
 
@@ -93,48 +93,43 @@ async def cancel_callback_handler(callback: CallbackQuery, state: FSMContext):
 
 @router.message(F.text == "⚙️ Баланс и Тариф")
 async def limits_menu(message: Message, session: AsyncSession):
-    # Тянем настройки
     settings = await session.get(AppSettings, 1)
     if not settings:
         await message.answer("❌ Не удалось загрузить настройки.")
         return
 
-    # Тянем квоты поиска
-    quota_stmt = select(AvitoSearchQuota).join(Account)
-    quotas = (await session.execute(quota_stmt)).scalars().all()
+    # Тянем статусы поиска (наши рубильники)
+    status_stmt = select(AvitoSearchStatus).join(Account)
+    statuses = (await session.execute(status_stmt)).scalars().all()
 
     stats = settings.stats or {}
     costs = settings.costs or {}
 
-    quota_lines = []
-    if quotas:
-        for q in quotas:
-            quota_lines.extend([f"- {q.account.name}: ", Bold(str(q.remaining_limits)), " шт.\n"])
+    status_lines = []
+    if statuses:
+        for s in statuses:
+            state_icon = "✅ ВКЛ" if s.is_enabled else "❌ ВЫКЛ"
+            status_lines.extend([f"- {s.account.name} (ID {s.account_id}): ", Bold(state_icon), "\n"])
     else:
-        quota_lines.append(Italic("Квоты не настроены.\n"))
+        status_lines.append(Italic("Аккаунты для поиска не настроены.\n"))
 
-    # Собираем контент с ИСПРАВЛЕННЫМ синтаксисом
     content = Text(
-        Bold("📊 Управление балансом:"), "\n\n",
+        Bold("📊 Управление системой:"), "\n\n",
         "Текущий баланс: ", Bold(f"{settings.balance:.2f}"), " руб.\n\n",
         
         Bold("📈 История затрат (всего):"), "\n",
-        # ВОТ ЗДЕСЬ БЫЛА ОШИБКА -> добавлена запятая в конце строки
         "- Потрачено на диалоги: ", Bold(f"{stats.get('spent_on_dialogues', 0):.2f}"), " руб.\n", 
         
         "\n💰 ", Bold("Тарифы:"), "\n",
         "Новый диалог: ", Bold(f"{costs.get('dialogue', 0):.2f}"), " руб.\n\n",
 
-        Bold("🔎 Лимиты поиска (контакты):"), "\n",
-        *quota_lines,
+        Bold("🔎 Глобальные рубильники поиска:"), "\n",
+        *status_lines,
         "\n",
-        
+        Italic("Квоты по вакансиям управляются через Google Таблицу."), "\n\n",
         "🔔 Уведомление при балансе < ", Bold(f"{settings.low_balance_threshold:.2f}"), " руб."
     )
     
-    # Для редактирования сообщения в будущем, лучше использовать message.answer
-    await message.answer(**content.as_kwargs(), reply_markup=limits_menu_keyboard)
-
     await message.answer(**content.as_kwargs(), reply_markup=limits_menu_keyboard)
 @router.callback_query(F.data == "set_limit")
 async def start_set_balance(callback: CallbackQuery, state: FSMContext):
@@ -195,45 +190,50 @@ async def process_set_cost_dialogue(message: Message, state: FSMContext, session
 
 
 @router.callback_query(F.data == "set_search_limit")
-async def start_set_search_limit(callback: CallbackQuery, state: FSMContext):
+async def start_toggle_search(callback: CallbackQuery, state: FSMContext):
     await state.set_state(SettingsManagement.set_search_balance)
     await callback.message.answer(
-        "Введите ID аккаунта и новый лимит через пробел.\n"
-        "Пример: `1 100` (где 1 - ID аккаунта, 100 - количество контактов)",
+        "Управление рубильником поиска.\n\n"
+        "Введите ID аккаунта и статус (1 - ВКЛ, 0 - ВЫКЛ).\n"
+        "Пример: `1 1` (Включить поиск для аккаунта ID 1)\n"
+        "Пример: `1 0` (Выключить поиск для аккаунта ID 1)",
         parse_mode="Markdown"
     )
     await callback.answer()
 
 @router.message(SettingsManagement.set_search_balance)
-async def process_set_search_limit(message: Message, state: FSMContext, session: AsyncSession):
+async def process_toggle_search(message: Message, state: FSMContext, session: AsyncSession):
     try:
         parts = message.text.split()
         if len(parts) != 2:
             raise ValueError
         
-        acc_id, new_limit = int(parts[0]), int(parts[1])
+        acc_id, status_val = int(parts[0]), int(parts[1])
+        is_on = True if status_val == 1 else False
         
-        # Ищем или создаем запись квоты
-        stmt = select(AvitoSearchQuota).filter_by(account_id=acc_id)
-        quota = await session.execute(stmt)
-        quota = quota.scalar_one_or_none()
+        # Ищем или создаем запись статуса
+        stmt = select(AvitoSearchStatus).filter_by(account_id=acc_id)
+        result = await session.execute(stmt)
+        status = result.scalar_one_or_none()
         
-        if not quota:
-            # Если записи еще нет, создаем новую
-            quota = AvitoSearchQuota(account_id=acc_id, remaining_limits=new_limit)
-            session.add(quota)
+        if not status:
+            # Если записи еще нет, создаем
+            status = AvitoSearchStatus(account_id=acc_id, is_enabled=is_on)
+            session.add(status)
         else:
-            quota.remaining_limits = new_limit
+            status.is_enabled = is_on
             
         await session.commit()
         await state.clear()
-        await message.answer(f"✅ Лимит поиска для аккаунта ID {acc_id} установлен: {new_limit} шт.", reply_markup=admin_keyboard)
+        
+        state_text = "ВКЛЮЧЕН" if is_on else "ВЫКЛЮЧЕН"
+        await message.answer(f"✅ Поиск для аккаунта ID {acc_id} теперь {state_text}.", reply_markup=admin_keyboard)
     
     except (ValueError, IndexError):
-        await message.answer("❌ Неверный формат. Введите `ID ЛИМИТ` (например: `1 50`).")
+        await message.answer("❌ Неверный формат. Введите `ID СТАТУС` (например: `1 1`).")
     except Exception as e:
-        logger.error(f"Ошибка при установке лимита поиска: {e}")
-        await message.answer("❌ Произошла ошибка. Проверьте ID аккаунта.")
+        logger.error(f"Ошибка при переключении рубильника: {e}")
+        await message.answer("❌ Ошибка. Проверьте, существует ли аккаунт с таким ID.")
 
 
 # --- 1. УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ---
