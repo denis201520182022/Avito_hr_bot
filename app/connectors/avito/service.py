@@ -457,13 +457,16 @@ class AvitoConnectorService:
             return None
         
         try:
-            # 1. Запрашиваем данные напрямую из Core API для проверки статуса
-            # Предполагаем, что в avito.client есть метод get_item_details, который делает GET /core/v1/items/{id}
-            item_data = await avito.get_item_details(str(item_id), account, db)
+            vac_details = None
+            try:
+                vac_details = await avito.get_job_details(str(item_id), account, db)
+            except Exception:
+                logger.info(f"ℹ️ {item_id} не вакансия. Тянем базовые данные через Core API...")
+                vac_details = await avito.get_item_details(str(item_id), account, db)
             
             # Определяем, активна ли вакансия
             # В Авито активный статус называется "active"
-            api_status = getattr(item_data, 'status', 'unknown')
+            api_status = getattr(vac_details, 'status', 'unknown')
             is_currently_active = (api_status == 'active')
 
             # 2. Ищем или создаем запись в нашей БД
@@ -473,10 +476,10 @@ class AvitoConnectorService:
                 db.add(job)
             
             # Обновляем данные и статус активности
-            job.title = item_data.title
-            job.city = item_data.city
+            job.title = vac_details.title
+            job.city = vac_details.city
             job.is_active = is_currently_active  # <-- Обновляем наше новое поле
-            job.description_data = {"text": item_data.description, "status": api_status}
+            job.description_data = {"text": vac_details.description, "status": api_status}
             
             await db.flush()
             return job

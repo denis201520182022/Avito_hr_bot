@@ -262,16 +262,19 @@ class AvitoClient:
         # Используем правильный путь с ID вакансии в строке
         path = f"/job/v2/vacancies/{vacancy_id}"
         
-        # Делаем GET запрос. По документации, если не передавать fields/params, 
-        # API вернет все доступные поля по умолчанию.
+        # Делаем GET запрос. По умолчанию отображаются все поля.
         data = await self._request("GET", path, account, db)
         
         if not data:
             raise ValueError(f"Vacancy {vacancy_id} not found")
             
-        # В этом методе ответ — это сразу объект вакансии (не список)
         vac = data
         
+        # 1. Извлекаем статус из булева значения (согласно твоему скриншоту: "is_active": true)
+        # Превращаем его в строку "active", чтобы сервис понимал его так же, как из Core API
+        is_active_bool = vac.get("is_active", False)
+        status = "active" if is_active_bool else "old"
+
         # Формируем полный текст для базы данных
         full_description_text = self._format_vacancy_full_text(vac)
 
@@ -281,12 +284,14 @@ class AvitoClient:
             title: str
             description: str
             city: str
+            status: str  # <--- ДОБАВИЛИ ПОЛЕ
             raw_json: dict
 
         return VacDTO(
             title=vac.get("title", "Без названия"),
             description=full_description_text,
             city=vac.get("addressDetails", {}).get("city", "Не указан"),
+            status=status,  # <--- ПЕРЕДАЕМ СТАТУС
             raw_json=vac 
         )
 
