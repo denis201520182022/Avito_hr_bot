@@ -43,7 +43,6 @@ class GoogleSyncSearchService:
             sh = self.gc.open_by_url(settings.google_sheets.spreadsheet_url)
             ws = sh.worksheet(settings.google_sheets.search_sheet_name)
             
-            # Читаем все данные листа (матрица)
             all_values = ws.get_all_values()
             if not all_values: return
 
@@ -56,41 +55,35 @@ class GoogleSyncSearchService:
                 db_vacancies = (await db.execute(stmt)).scalars().all()
                 db_vac_map = {v.external_id: v for v in db_vacancies}
                 
-                # 3. Парсим текущие столбцы таблицы (начиная с колонки C, индекс 2)
-                # Колонки в Google Sheets: A=0, B=1, C=2...
-                num_rows = len(all_values)
-                num_cols = len(all_values[0]) if num_rows > 0 else 0
-                
-                new_sheet_columns = [] # Здесь будем хранить обновленные данные для записи назад
+                num_cols = len(all_values[0]) if len(all_values) > 0 else 0
+                new_sheet_columns = [] 
                 processed_ids = set()
 
+                # 3. Читаем существующие колонки (C, D, E...)
                 for col_idx in range(2, num_cols):
-                    # Извлекаем ID вакансии из строки 2 (индекс 1)
+                    # ID вакансии в СТРОКЕ 2 (индекс 1 в get_all_values)
                     ext_id = all_values[1][col_idx].strip()
                     if not ext_id: continue
                     
                     processed_ids.add(ext_id)
                     vacancy = db_vac_map.get(ext_id)
 
-                    # Если вакансия в БД неактивна или удалена - мы просто не добавим её в new_sheet_columns
-                    if not vacancy:
-                        continue
+                    if not vacancy: continue
 
-                    # --- ОБРАБОТКА КВОТ ---
-                    quota_to_add = self._clean_value(all_values[3][col_idx]) # Строка 4
+                    # КВОТЫ: СТРОКА 4 (индекс 3)
+                    quota_to_add = self._clean_value(all_values[3][col_idx])
                     if quota_to_add and quota_to_add.isdigit():
                         vacancy.search_remaining_quota += int(quota_to_add)
                         logger.info(f"Добавлено {quota_to_add} квот вакансии {ext_id}")
                     
-                    # --- ОБРАБОТКА ПАРАМЕТРОВ ПОИСКА ---
+                    # ПАРАМЕТРЫ: читаем из соответствующих строк (индекс = строка - 1)
                     filters = {
-                        "query": self._clean_value(all_values[5][col_idx]),
-                        "location": self._clean_value(all_values[6][col_idx]),
-                        "metro": self._clean_value(all_values[7][col_idx]),
-                        "district": self._clean_value(all_values[8][col_idx]),
-                        # Применяем форматирование для ID
-                        "specialization": self._extract_ids(all_values[9][col_idx]),
-                        "schedule": self._clean_value(all_values[10][col_idx]),
+                        "query": self._clean_value(all_values[5][col_idx]),        # Стр 6
+                        "location": self._clean_value(all_values[6][col_idx]),     # Стр 7
+                        "metro": self._clean_value(all_values[7][col_idx]),        # Стр 8
+                        "district": self._clean_value(all_values[8][col_idx]),     # Стр 9
+                        "specialization": self._extract_ids(all_values[9][col_idx]),# Стр 10
+                        "schedule": self._clean_value(all_values[10][col_idx]),     # Стр 11
                         "business_trip_readiness": self._clean_value(all_values[11][col_idx]),
                         "relocation_readiness": self._clean_value(all_values[12][col_idx]),
                         "gender": self._clean_value(all_values[13][col_idx]),
@@ -110,43 +103,41 @@ class GoogleSyncSearchService:
                     }
                     vacancy.search_filters = filters
                     
-                    # Подготавливаем данные столбца для записи обратно в таблицу
-                    col_data = [""] * 27 # 27 строк
-                    col_data[1] = vacancy.external_id
-                    col_data[2] = vacancy.title
-                    col_data[3] = "" # Обнуляем "Квоты задать"
-                    col_data[4] = str(vacancy.search_remaining_quota) # Пишем "Квоты осталось"
-                    # Копируем остальные фильтры как есть (чтобы не портить визуализацию в таблице)
+                    # ПОДГОТОВКА КОЛОНКИ ДЛЯ ЗАПИСИ (начиная со строки 2)
+                    col_data = [""] * 26 # Индексы 0-25 соответствуют строкам 2-27
+                    col_data[0] = vacancy.external_id                 # Строка 2
+                    col_data[1] = vacancy.title                       # Строка 3
+                    col_data[2] = ""                                  # Строка 4 (сброс ввода)
+                    col_data[3] = str(vacancy.search_remaining_quota) # Строка 5 (остаток)
+                    
+                    # Копируем визуальные значения параметров обратно (строки 6-27 -> индексы 4-25)
                     for r in range(5, 27):
-                        col_data[r] = all_values[r][col_idx]
+                        if r < len(all_values):
+                            col_data[r-1] = all_values[r][col_idx]
                     
                     new_sheet_columns.append(col_data)
 
-                # 4. ДОБАВЛЯЕМ НОВЫЕ ВАКАНСИИ, которых еще нет в таблице
+                # 4. ДОБАВЛЯЕМ НОВЫЕ ВАКАНСИИ
                 for ext_id, vac in db_vac_map.items():
                     if ext_id not in processed_ids:
-                        new_col = [""] * 27
-                        new_col[1] = vac.external_id
-                        new_col[2] = vac.title
-                        new_col[3] = ""
-                        new_col[4] = str(vac.search_remaining_quota)
+                        new_col = [""] * 26
+                        new_col[0] = vac.external_id
+                        new_col[1] = vac.title
+                        new_col[2] = ""
+                        new_col[3] = str(vac.search_remaining_quota)
                         new_sheet_columns.append(new_col)
-                        logger.info(f"Добавлена новая вакансия в таблицу: {vac.title}")
+                        logger.info(f"Добавлена новая вакансия: {vac.title}")
 
-                # 5. ЗАПИСЫВАЕМ ОБНОВЛЕННЫЕ ДАННЫЕ В ТАБЛИЦУ (Обновление со сдвигом)
-                # Очищаем старые данные справа от заголовков (C2:ZZ27)
+                # 5. ОЧИСТКА И ЗАПИСЬ (C2:ZZ27)
                 ws.batch_clear(["C2:ZZ27"])
                 
                 if new_sheet_columns:
-                    # Транспонируем список столбцов обратно в строки для gspread
-                    # zip(*new_sheet_columns) превратит список столбцов в список строк
+                    # Транспонируем: список колонок в список строк для записи
                     rows_to_update = list(zip(*new_sheet_columns))
-                    # Записываем в диапазон, начиная с C2 (строка 2, колонка 3)
-                    start_cell = gspread.utils.rowcol_to_a1(2, 3)
-                    ws.update(start_cell, rows_to_update)
+                    ws.update("C2", rows_to_update)
 
                 await db.commit()
-                logger.info("✅ Синхронизация с AvitoSearch завершена успешно")
+                logger.info("✅ Синхронизация AvitoSearch завершена (индексы исправлены)")
 
         except Exception as e:
             logger.error(f"❌ Ошибка синхронизации AvitoSearch: {e}", exc_info=True)
