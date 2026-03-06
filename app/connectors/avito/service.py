@@ -285,6 +285,23 @@ class AvitoConnectorService:
             # 3. Ищем существующий диалог
             stmt = select(Dialogue).options(selectinload(Dialogue.vacancy)).filter_by(external_chat_id=external_chat_id)
             dialogue = (await db.execute(stmt)).scalar_one_or_none()
+            # 5. Синхронизируем вакансию
+            job_context = None
+            if item_id:
+                try:
+                    job_context = await self._sync_vacancy(account, db, item_id)
+                    
+                    # --- ГЛАВНЫЙ ФИЛЬТР: ПРЕРЫВАЕМ ОБРАБОТКУ, ЕСЛИ НЕ АКТИВНА ---
+                    if not job_context or not job_context.is_active:
+                        status_label = "НЕ АКТИВНА" if job_context else "НЕ НАЙДЕНА"
+                        logger.info(f"⛔ ИГНОР: Вакансия {item_id} {status_label}. Обработка прервана.")
+                        
+                        # Если вакансия не активна, мы просто выходим из функции.
+                        # БД зафиксирует is_active=False (внутри _sync_vacancy), но диалог не создастся/не обновится.
+                        await db.commit() # Сохраняем статус вакансии
+                        return 
+                except:
+                    logger.info(f"ℹ️ Контекст объявления {item_id} не подтянут, продолжаем.")
 
             if dialogue:
                 # --- ЛОГИКА ДЛЯ СУЩЕСТВУЮЩЕГО ДИАЛОГА ---
@@ -334,14 +351,7 @@ class AvitoConnectorService:
                         await db.rollback()
                         candidate = await db.scalar(select(Candidate).filter_by(platform_user_id=unique_candidate_key))
 
-                # 5. Синхронизируем вакансию
-                job_context = None
-                if item_id:
-                    try:
-                        job_context = await self._sync_vacancy(account, db, item_id)
-                    except:
-                        logger.info(f"ℹ️ Контекст объявления {item_id} не подтянут, продолжаем.")
-
+                
                 # 6. Биллинг и создание диалога
                 dialogue = await self._sync_dialogue_and_billing(
                     account, candidate, job_context, external_chat_id, db, 
@@ -447,26 +457,26 @@ class AvitoConnectorService:
             return None
         
         try:
-            vac_details = None
+            # 1. Запрашиваем данные напрямую из Core API для проверки статуса
+            # Предполагаем, что в avito.client есть метод get_item_details, который делает GET /core/v1/items/{id}
+            item_data = await avito.get_item_details(str(item_id), account, db)
             
-            # 1. Пробуем как вакансию
-            try:
-                vac_details = await avito.get_job_details(str(item_id), account, db)
-            except Exception:
-                # 2. Если не вакансия — тянем через наш новый get_item_details
-                logger.info(f"ℹ️ {item_id} не вакансия. Тянем базовые данные через Core API...")
-                vac_details = await avito.get_item_details(str(item_id), account, db)
+            # Определяем, активна ли вакансия
+            # В Авито активный статус называется "active"
+            api_status = getattr(item_data, 'status', 'unknown')
+            is_currently_active = (api_status == 'active')
 
-            # 3. Сохраняем в базу (название и город уже будут)
+            # 2. Ищем или создаем запись в нашей БД
             job = await db.scalar(select(JobContext).filter_by(external_id=str(item_id)))
             if not job:
                 job = JobContext(external_id=str(item_id), account_id=account.id)
                 db.add(job)
             
-            job.title = vac_details.title
-            job.city = vac_details.city
-            # Сюда запишется наша заглушка с ценой и ссылкой
-            job.description_data = {"text": vac_details.description}
+            # Обновляем данные и статус активности
+            job.title = item_data.title
+            job.city = item_data.city
+            job.is_active = is_currently_active  # <-- Обновляем наше новое поле
+            job.description_data = {"text": item_data.description, "status": api_status}
             
             await db.flush()
             return job
@@ -679,3 +689,4 @@ class AvitoConnectorService:
 avito_connector = AvitoConnectorService()
 
 
+logger = logging.getLogger("avito.service")

@@ -423,7 +423,7 @@ class AvitoClient:
                 raise ValueError(f"Объявление {item_id} не найдено в API")
             
             item = resources[0] # Берем первое из списка
-
+            status = item.get("status", "unknown") 
             # Чистим город из адреса (Ставропольский край, Ставрополь... -> Ставрополь)
             full_address = item.get("address", "")
             city = "Не указан"
@@ -438,6 +438,7 @@ class AvitoClient:
                 title: str
                 description: str
                 city: str
+                status: str
                 raw_json: dict
 
             # Формируем описание из того, что есть (название + цена)
@@ -454,6 +455,7 @@ class AvitoClient:
                 title=item.get("title", "Объявление"),
                 description=description,
                 city=city,
+                status=status,
                 raw_json=item
             )
         except Exception as e:

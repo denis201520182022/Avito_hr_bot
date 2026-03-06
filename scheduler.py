@@ -10,6 +10,7 @@ from app.connectors.avito.avito_search import avito_search_service
 from app.core.config import settings
 from app.core.rabbitmq import mq
 from app.db.session import AsyncSessionLocal, engine
+from app.db.models import JobContext
 from app.db.models import Dialogue, InterviewReminder
 from app.services.knowledge_base import kb_service
 from sqlalchemy.orm import selectinload
@@ -59,11 +60,13 @@ class Scheduler:
                     # Загружаем диалоги + кандидатов (чтобы достать timezone из профиля)
                     stmt = (
                         select(Dialogue)
+                        .join(JobContext) # Присоединяем таблицу вакансий для фильтрации
                         .options(selectinload(Dialogue.candidate))
                         .where(
                             and_(
-                                Dialogue.status.in_(['in_progress', 'timed_out', 'new']),
-                                Dialogue.reminder_level < len(settings.reminders.silence.levels)
+                                Dialogue.status.in_(['in_progress']),
+                                Dialogue.reminder_level < len(settings.reminders.silence.levels),
+                                JobContext.is_active == True  # <--- ДОБАВЛЕНО: только активные вакансии
                             )
                         )
                     )
@@ -187,6 +190,8 @@ class Scheduler:
                     # Загружаем напоминания, которые пора отправить
                     stmt = (
                         select(InterviewReminder)
+                        .join(Dialogue)    # Соединяем с диалогами
+                        .join(JobContext)  # Соединяем с вакансиями
                         .options(
                             selectinload(InterviewReminder.dialogue)
                             .selectinload(Dialogue.vacancy)
@@ -194,7 +199,8 @@ class Scheduler:
                         .where(
                             and_(
                                 InterviewReminder.status == 'pending',
-                                InterviewReminder.scheduled_at <= now_utc
+                                InterviewReminder.scheduled_at <= now_utc,
+                                JobContext.is_active == True # <--- ДОБАВЛЕНО: если вакансия закрыта, напоминание не шлем
                             )
                         )
                     )
