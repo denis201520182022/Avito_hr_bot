@@ -6,7 +6,7 @@ from app.db.models import (
     Account, 
     JobContext, 
     Candidate, 
-    AvitoSearchQuota, 
+    AvitoSearchStatus, 
     AvitoSearchStat
 )
 from app.connectors.avito.client import avito
@@ -16,71 +16,63 @@ from app.utils.redis_lock import get_redis_client
 logger = logging.getLogger("AvitoSearch")
 
 class AvitoSearchService:
-    # Маппинг твоих вакансий на ID специализаций Авито
-    SPECIALIZATION_MAP = {
-        "повар": "10173",             # Туризм, рестораны
-        "горничная": "10173,16844",    # Туризм + Домашний персонал
-        "кухонный работник": "10173",  # Туризм, рестораны
-        "технический работник": "10184,10175", # ЖКХ + Без опыта
-    }
-
     async def discover_and_propose(self):
+        """Основной цикл: обход аккаунтов и запуск поиска по вакансиям"""
         async with AsyncSessionLocal() as db:
             # 1. Получаем все активные аккаунты Авито
             stmt = select(Account).filter_by(platform="avito", is_active=True)
             accounts = (await db.execute(stmt)).scalars().all()
 
             for acc in accounts:
-                # 2. ПЕРВИЧНАЯ ПРОВЕРКА КВОТЫ (чтобы не запрашивать список вакансий зря)
-                quota = await db.scalar(select(AvitoSearchQuota).filter_by(account_id=acc.id))
-                if not quota or quota.remaining_limits <= 0:
-                    logger.warning(f"⚠️ У аккаунта {acc.name} (ID: {acc.id}) закончились лимиты.")
+                # 2. ПРОВЕРКА ГЛОБАЛЬНОГО РУБИЛЬНИКА (из таблицы AvitoSearchStatus)
+                status_stmt = select(AvitoSearchStatus).filter_by(account_id=acc.id)
+                status = await db.scalar(status_stmt)
+                
+                if not status or not status.is_enabled:
+                    logger.info(f"⏸ Поиск для аккаунта '{acc.name}' (ID: {acc.id}) выключен пользователем.")
                     continue
 
-                # 3. Получаем только активные вакансии из БД
-                vac_stmt = select(JobContext).filter_by(account_id=acc.id, is_active=True)
+                # 3. Получаем активные вакансии аккаунта, у которых остались квоты
+                vac_stmt = select(JobContext).filter(
+                    and_(
+                        JobContext.account_id == acc.id,
+                        JobContext.is_active == True,
+                        JobContext.search_remaining_quota > 0
+                    )
+                )
                 vacancies = (await db.execute(vac_stmt)).scalars().all()
 
+                if not vacancies:
+                    logger.debug(f"Нет активных вакансий с лимитами для аккаунта {acc.name}")
+                    continue
+
                 for vac in vacancies:
-                    # 4. ПРОВЕРКА: Активна ли вакансия на самом Авито?
+                    # 4. Проверка: не закрыта ли вакансия на самом Авито?
                     is_still_active = await self._check_avito_vacancy_status(acc, vac, db)
                     
                     if is_still_active:
-                        # Запускаем поиск кандидатов
                         await self._search_for_vacancy(acc, vac, db)
                     else:
-                        logger.info(f"🚫 Вакансия {vac.external_id} ({vac.title}) закрыта на Авито. Пропускаем.")
+                        logger.info(f"🚫 Вакансия '{vac.title}' ({vac.external_id}) деактивирована на Авито. Пропускаем.")
             
-            # Финальный коммит всех изменений статусов вакансий
             await db.commit()
 
     async def _check_avito_vacancy_status(self, account, vacancy, db) -> bool:
-        """Запрашивает статус вакансии через Job API и обновляет БД"""
+        """Синхронизация статуса вакансии с API Авито"""
         try:
             vac_data = await avito.get_job_details(vacancy.external_id, account, db)
             status_from_api = vac_data.raw_json.get("is_active", False)
             
             if not status_from_api:
-                vacancy.is_active = False
-                logger.warning(f"📉 Вакансия {vacancy.title} деактивирована на стороне Авито.")
+                vacancy.is_active = False # Синхронизируем нашу БД
                 return False
-            
             return True
         except Exception as e:
             logger.error(f"Ошибка проверки статуса вакансии {vacancy.external_id}: {e}")
-            return True
-
-    async def _get_location_id(self, account, db, city_name: str) -> int:
-        """Получает числовой ID локации Авито по названию"""
-        if not city_name: return None
-        try:
-            resp = await avito._request("GET", "/core/v1/locations", account, db, params={"q": city_name})
-            return resp[0].get("id") if resp else None
-        except:
-            return None
+            return True # В случае ошибки API считаем вакансию активной, чтобы не прерывать поиск
 
     async def _update_daily_stats(self, db, account_id, vacancy_id):
-        """Ведет учет потраченных лимитов по дням и вакансиям"""
+        """Обновление ежедневной статистики затрат"""
         today = datetime.date.today()
         stat_stmt = select(AvitoSearchStat).filter(
             and_(
@@ -103,90 +95,110 @@ class AvitoSearchService:
             db.add(new_stat)
 
     async def _search_for_vacancy(self, account, vacancy, db):
+        """Логика поиска резюме под конкретную вакансию"""
         try:
             redis = get_redis_client()
             cursor_key = f"avito_search_cursor:{account.id}:{vacancy.id}"
             last_cursor = await redis.get(cursor_key)
 
-            location_id = await self._get_location_id(account, db, vacancy.city)
-            spec_id = self.SPECIALIZATION_MAP.get(vacancy.title.lower(), "")
+            # --- ФОРМИРОВАНИЕ ПАРАМЕТРОВ ПОИСКА ИЗ БД ---
+            f = vacancy.search_filters or {}
             
+            # Базовый набор (всегда есть)
             search_params = {
-                "query": vacancy.title,
-                "age_min": 30, 
-                "age_max": 55, 
+                "query": f.get("query") or vacancy.title,
                 "per_page": 20,
-                "fields": "location,address_details,nationality,age"
+                "fields": "location,address_details,nationality,age,education,experience,driving"
             }
-            if last_cursor: search_params["cursor"] = last_cursor
-            if spec_id: search_params["specialization"] = spec_id
-            if location_id: search_params["location"] = location_id
 
-            # Выполняем поиск резюме
+            # Маппинг всех гибких фильтров из вашей таблицы
+            # (Синхронизатор уже подготовил ID, здесь просто прокидываем их в API)
+            # Маппинг всех гибких фильтров из вашей таблицы
+            optional_fields = [
+                "location", "specialization", "schedule", "age_min", "age_max",
+                "gender", "education_level", "experience_min", "experience_max",
+                "nationality", "medical_book", "salary_min", "salary_max",
+                "driver_licence", "driver_licence_category", "driving_experience",
+                "own_transport", "business_trip_readiness", "relocation_readiness"
+            ]
+
+            for field in optional_fields:
+                val = f.get(field)
+                
+                # ПРОВЕРКА: 
+                # 1. Значение не None (уже обработано синхронизатором)
+                # 2. Значение не пустая строка
+                # 3. Значение не строка 'null'
+                if val is not None:
+                    str_val = str(val).strip()
+                    if str_val != "" and str_val.lower() != 'null':
+                        search_params[field] = val
+
+            if last_cursor: 
+                search_params["cursor"] = last_cursor
+
+            # Выполнение запроса к API Авито
             results = await avito.search_cvs(account, db, search_params)
             new_cursor = results.get("meta", {}).get("cursor")
             resumes = results.get("resumes", [])
 
             if not resumes:
-                logger.info(f"Ничего не найдено для '{vacancy.title}', сброс курсора.")
+                logger.info(f"Поиск '{vacancy.title}' не дал результатов, сброс курсора.")
                 await redis.delete(cursor_key)
                 return
 
+            # Сохраняем новый курсор для следующего прогона
             if new_cursor:
-                await redis.set(cursor_key, str(new_cursor), ex=604800)
+                await redis.set(cursor_key, str(new_cursor), ex=604800) # 7 дней жизни курсора
 
             opened_count = 0
-            MAX_OPEN_PER_VACANCY = 5
+            MAX_PER_RUN = 5 # Ограничение на один прогон для экономии
 
             for cv in resumes:
-                if opened_count >= MAX_OPEN_PER_VACANCY:
+                if opened_count >= MAX_PER_RUN:
                     break
 
                 resume_id = str(cv.get("id"))
 
-                # 1. ПРОВЕРКА: Есть ли кандидат уже в базе? (Бесплатно)
-                cand_stmt = select(Candidate).filter_by(platform_user_id=resume_id)
-                exists = await db.scalar(cand_stmt)
+                # 1. Проверка на дубликаты (Бесплатно)
+                exists = await db.scalar(select(Candidate).filter_by(platform_user_id=resume_id))
                 if exists:
                     continue
 
-                # 2. БЕЗОПАСНОЕ СПИСАНИЕ КВОТЫ (АТОМАРНО)
-                # Уменьшаем лимит только если он больше 0
+                # 2. АТОМАРНОЕ СПИСАНИЕ КВОТЫ ВАКАНСИИ
+                # Используем SQL update с условием, чтобы избежать race condition
                 quota_stmt = (
-                    update(AvitoSearchQuota)
+                    update(JobContext)
                     .where(and_(
-                        AvitoSearchQuota.account_id == account.id,
-                        AvitoSearchQuota.remaining_limits > 0
+                        JobContext.id == vacancy.id,
+                        JobContext.search_remaining_quota > 0
                     ))
-                    .values(remaining_limits=AvitoSearchQuota.remaining_limits - 1)
-                    .returning(AvitoSearchQuota.remaining_limits)
+                    .values(search_remaining_quota=JobContext.search_remaining_quota - 1)
+                    .returning(JobContext.search_remaining_quota)
                 )
                 
                 res = await db.execute(quota_stmt)
                 new_limit = res.scalar()
 
                 if new_limit is None:
-                    logger.warning(f"🛑 Лимиты аккаунта {account.id} исчерпаны во время прогона.")
+                    logger.warning(f"🛑 Квоты вакансии '{vacancy.title}' исчерпаны.")
                     break
 
                 try:
-                    # 3. ПЛАТНОЕ ПОЛУЧЕНИЕ КОНТАКТОВ В API АВИТО
-                    logger.info(f"💰 [SAFE SPEND] Открываем контакты {resume_id}. Осталось лимитов: {new_limit}")
+                    # 3. ПОЛУЧЕНИЕ КОНТАКТОВ (Платно)
+                    logger.info(f"💰 Открываем контакты {resume_id} для вакансии '{vacancy.title}'. Остаток: {new_limit}")
                     contacts_data = await avito.get_resume_contacts(account, db, resume_id)
                     
                     contacts_list = contacts_data.get("contacts", [])
                     chat_id = next((c["value"] for c in contacts_list if c["type"] == "chat_id"), None)
                     
                     if not chat_id:
-                        # Если нет чата, это фиаско, но лимит Авито уже списал за открытие телефона
-                        logger.warning(f"У резюме {resume_id} нет chat_id (только телефон?).")
-                        # Продолжаем, лимит не возвращаем, так как Авито его уже "съел" за просмотр телефона
+                        logger.warning(f"У резюме {resume_id} нет chat_id. Лимит списан Авито за телефон.")
                         continue
 
-                    # 4. ОБНОВЛЕНИЕ СТАТИСТИКИ
+                    # 4. Обновление статистики и отправка в Engine
                     await self._update_daily_stats(db, account.id, vacancy.id)
 
-                    # 5. ОТПРАВКА В ОЧЕРЕДЬ
                     await mq.publish("avito_inbound", {
                         "source": "avito_search_found",
                         "account_id": account.id,
@@ -194,7 +206,7 @@ class AvitoSearchService:
                         "payload": {
                             "search_full_name": contacts_data.get("name"),
                             "search_phone": next((c["value"] for c in contacts_list if c["type"] == "phone"), None),
-                            "cv_data": cv
+                            "cv_data": cv # Полные данные резюме для LLM
                         },
                         "chat_id": chat_id,
                         "resume_id": resume_id,
@@ -202,21 +214,20 @@ class AvitoSearchService:
                     })
                     
                     opened_count += 1
-                    # Сохраняем списание и стату немедленно
-                    await db.commit() 
+                    await db.commit() # Фиксируем списание каждой квоты немедленно
 
                 except Exception as api_err:
-                    # 6. ВОЗВРАТ ЛИМИТА, если запрос к API Авито упал (например, таймаут)
-                    logger.error(f"❌ Ошибка API Авито для {resume_id}, возвращаем лимит: {api_err}")
+                    # 5. ВОЗВРАТ КВОТЫ при системной ошибке запроса
+                    logger.error(f"❌ Ошибка API для {resume_id}, возвращаем квоту: {api_err}")
                     await db.execute(
-                        update(AvitoSearchQuota)
-                        .where(AvitoSearchQuota.account_id == account.id)
-                        .values(remaining_limits=AvitoSearchQuota.remaining_limits + 1)
+                        update(JobContext)
+                        .where(JobContext.id == vacancy.id)
+                        .values(search_remaining_quota=JobContext.search_remaining_quota + 1)
                     )
                     await db.commit()
                     continue
 
         except Exception as e:
-            logger.error(f"Ошибка в процессе поиска по вакансии {vacancy.id}: {e}")
+            logger.error(f"Ошибка в процессе поиска по вакансии {vacancy.id}: {e}", exc_info=True)
 
 avito_search_service = AvitoSearchService()

@@ -35,7 +35,8 @@ google_sheets:
   spreadsheet_url: "https://docs.google.com/spreadsheets/d/1njb64bZ2mT0S7lQgSGFRN5HD9fzMKnJ--6u-kWIC7es/edit"
   calendar_sheet_name: "Calendar"
   candidates_sheet_name: "Candidates"
-
+  search_sheet_name: "AvitoSearch"
+  
 # Логика напоминаний
 reminders:
   silence:

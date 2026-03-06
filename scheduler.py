@@ -14,7 +14,7 @@ from app.db.models import JobContext
 from app.db.models import Dialogue, InterviewReminder
 from app.services.knowledge_base import kb_service
 from sqlalchemy.orm import selectinload
-
+from app.services.google_sync_search import google_sync_search_service
 from app.utils.logger import logger, set_log_context, log_context
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
@@ -32,7 +32,8 @@ class Scheduler:
             self._loop_silence_reminders(),      # Напоминания молчунам
             self._loop_interview_reminders(),    # Напоминания перед собесом
             self._loop_kb_refresh(),             # Обновление промпта (раз в 3 мин)
-            self._loop_candidate_search()        # Активный поиск кандидатов
+            self._loop_candidate_search(),        # Активный поиск кандидатов
+            self._loop_google_search_sync()        
         )
 
     async def stop(self):
@@ -324,6 +325,16 @@ class Scheduler:
                     })
                 except: pass
             await asyncio.sleep(180)
+
+    async def _loop_google_search_sync(self):
+        """Синхронизация параметров поиска из Google Таблицы каждые 5 минут"""
+        while self.is_running:
+            try:
+                logger.info("🔄 Синхронизация параметров поиска из Google Таблицы...")
+                await google_sync_search_service.sync_all()
+            except Exception as e:
+                logger.error(f"Ошибка в цикле синхронизации поиска: {e}")
+            await asyncio.sleep(300) # 5 минут
 
 async def main():
     scheduler = Scheduler()

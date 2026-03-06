@@ -43,6 +43,14 @@ class JobContext(Base):
     is_active = Column(Boolean, default=True) # <-- НОВЫЙ СТОЛБЕЦ
     
     description_data = Column(JSONB, server_default='{}')
+
+
+    # Остаток квот на открытие контактов именно для этой вакансии
+    # Клиент вводит число в таблицу, бот обновляет это поле, а затем минусует при поиске
+    search_remaining_quota = Column(Integer, default=0)
+    
+    # Все поисковые параметры из строк Google Таблицы (age_min, nationality, query и т.д.)
+    search_filters = Column(JSONB, server_default='{}')
     
     account = relationship("Account", back_populates="vacancies")
     dialogues = relationship("Dialogue", back_populates="vacancy")
@@ -216,13 +224,15 @@ class AnalyticsEvent(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
-class AvitoSearchQuota(Base):
-    """Общий баланс лимитов на открытие контактов резюме"""
-    __tablename__ = 'avito_search_quotas'
+class AvitoSearchStatus(Base):
+    """Глобальный рубильник поиска для конкретного аккаунта Авито"""
+    __tablename__ = 'avito_search_statuses'
     
     id = Column(Integer, primary_key=True)
     account_id = Column(Integer, ForeignKey('accounts.id'), unique=True)
-    remaining_limits = Column(Integer, default=0) # Сколько контактов можно открыть
+    
+    # Тот самый рубильник: True - ищем, False - всё стоит на паузе
+    is_enabled = Column(Boolean, default=False)
     
     account = relationship("Account")
 

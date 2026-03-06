@@ -46,6 +46,7 @@ class GoogleSheetsConfig(BaseModel):
     spreadsheet_url: str
     calendar_sheet_name: str
     candidates_sheet_name: str
+    search_sheet_name: str
 
 class KBConfig(BaseModel):
     prompt_doc_url: str
