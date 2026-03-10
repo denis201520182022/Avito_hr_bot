@@ -456,42 +456,44 @@ class AvitoConnectorService:
         if not item_id:
             return None
         
-        try:
-            vac_details = None
-            try:
-                vac_details = await avito.get_job_details(str(item_id), account, db)
-            except Exception:
-                logger.info(f"ℹ️ {item_id} не вакансия. Тянем базовые данные через Core API...")
-                vac_details = await avito.get_item_details(str(item_id), account, db)
-            
-            # Определяем, активна ли вакансия
-            # В Авито активный статус называется "active"
-            api_status = getattr(vac_details, 'status', 'unknown')
-            is_currently_active = (api_status == 'active')
-
-            # 2. Ищем или создаем запись в нашей БД
-            job = await db.scalar(select(JobContext).filter_by(external_id=str(item_id)))
-            if not job:
-                job = JobContext(external_id=str(item_id), account_id=account.id)
-                db.add(job)
-            
-            # Обновляем данные и статус активности
-            job.title = vac_details.title
-            job.city = vac_details.city
-            job.is_active = is_currently_active  # <-- Обновляем наше новое поле
-            job.description_data = {"text": vac_details.description, "status": api_status}
-            
-            await db.flush()
-            return job
+        item_id_str = str(item_id)
         
+        # 1. Получаем или создаем запись в БД
+        job = await db.scalar(select(JobContext).filter_by(external_id=item_id_str))
+        if not job:
+            job = JobContext(external_id=item_id_str, account_id=account.id, is_active=True)
+            db.add(job)
+            await db.flush()
+
+        vac_details = None
+        try:
+            # Пытаемся получить детали как вакансию
+            try:
+                vac_details = await avito.get_job_details(item_id_str, account, db)
+            except Exception as e:
+                # Если не вакансия — идем в Core API
+                logger.info(f"ℹ️ {item_id_str} проверяем через Core API...")
+                vac_details = await avito.get_item_details(item_id_str, account, db)
+
+            # Если API что-то вернуло
+            if vac_details:
+                api_status = getattr(vac_details, 'status', 'unknown')
+                job.is_active = (api_status == 'active') # ЖЕСТКАЯ ПРОВЕРКА
+                job.title = vac_details.title
+                job.city = vac_details.city
+                job.description_data = {"text": vac_details.description, "status": api_status}
+                logger.info(f"✅ Статус API для {item_id_str}: {api_status} (is_active={job.is_active})")
+            else:
+                # Если vac_details == None (объявление не найдено совсем)
+                logger.warning(f"🔴 Объявление {item_id_str} отсутствует в API. Деактивируем.")
+                job.is_active = False
+
         except Exception as e:
-            # Если это обычное объявление (не вакансия), API вернет ошибку.
-            # Мы просто логируем это как INFO и возвращаем None, не прерывая работу.
-            logger.info(f"ℹ️ Объявление {item_id} не является вакансией или Job API недоступен. Пропускаем синхронизацию параметров.")
-            error_msg = f"⚠️ Ошибка синхронизации вакансии {item_id} для аккаунта {account.name}: {e}"
-            await mq.publish("tg_alerts", {"type": "system", "text": error_msg})
-            # Пытаемся найти уже существующую запись в базе, если она была создана ранее
-            return await db.scalar(select(JobContext).filter_by(external_id=str(item_id)))
+            logger.error(f"💥 Ошибка при синхронизации {item_id_str}: {e}")
+            job.is_active = False # Безопасный режим: если ошибка связи, считаем неактивным
+
+        await db.flush()
+        return job
         
     
         

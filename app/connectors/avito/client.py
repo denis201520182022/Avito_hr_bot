@@ -440,29 +440,38 @@ class AvitoClient:
     async def get_item_details(self, item_id: str, account: Account, db: AsyncSession):
         """
         Получение данных через Core API (Resources).
-        Работает для обычных объявлений (Услуги, Товары).
         """
-        # Используем путь, который сработал в curl
         path = "/core/v1/items"
-        params = {"ids": str(item_id)}
+        # Явно перечисляем все статусы, чтобы Авито вернуло нам даже архивное объявление
+        params = {
+            "ids": str(item_id),
+            "status": "active,removed,old,blocked,rejected" 
+        }
         
         try:
-            # Делаем запрос
             data = await self._request("GET", path, account, db, params=params)
-            
-            # В этом методе данные лежат в resources
             resources = data.get("resources", [])
-            if not resources:
-                raise ValueError(f"Объявление {item_id} не найдено в API")
             
-            item = resources[0] # Берем первое из списка
+            # Если после запроса всех статусов список пуст — значит объявления реально нет
+            if not resources:
+                logger.warning(f"⚠️ Объявление {item_id} не найдено в API даже среди архивных.")
+                return None # Возвращаем None вместо raise, чтобы сервис понял: "активности нет"
+
+            # Ищем в массиве именно наше ID (на случай, если ids фильтр сработал как поиск)
+            # Ищем строго наше объявление в списке
+            item = next((i for i in resources if str(i.get('id')) == str(item_id)), None)
+            
+            # Если в списке ресурсов не нашли именно наше ID
+            if not item:
+                logger.warning(f"⚠️ Объявление {item_id} не найдено в списке ресурсов API.")
+                return None # Это заставит сервис считать его неактивным
+            
             status = item.get("status", "unknown") 
-            # Чистим город из адреса (Ставропольский край, Ставрополь... -> Ставрополь)
+            
             full_address = item.get("address", "")
             city = "Не указан"
             if full_address:
                 parts = [p.strip() for p in full_address.split(",")]
-                # Обычно город — это второй элемент после края, либо первый
                 city = parts[1] if len(parts) > 1 else parts[0]
 
             from dataclasses import dataclass
@@ -474,14 +483,11 @@ class AvitoClient:
                 status: str
                 raw_json: dict
 
-            # Формируем описание из того, что есть (название + цена)
-            price = item.get("price", "Не указана")
             description = (
                 f"📦 ОБЪЯВЛЕНИЕ: {item.get('title')}\n"
-                f"💰 Цена: {price} руб.\n"
+                f"💰 Цена: {item.get('price', 'Не указана')} руб.\n"
                 f"📍 Адрес: {full_address}\n"
-                f"🔗 Ссылка: {item.get('url')}\n\n"
-                f"⚠️ Описание не получено через API, будет добавлено вручную."
+                f"🔗 Ссылка: {item.get('url')}\n"
             )
 
             return ItemDTO(
@@ -493,6 +499,6 @@ class AvitoClient:
             )
         except Exception as e:
             logger.error(f"❌ Ошибка Core API для item {item_id}: {e}")
-            raise e
+            return None # Важно вернуть None, чтобы вызвать срабатывание защиты
 
 avito = AvitoClient()
