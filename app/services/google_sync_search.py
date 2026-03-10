@@ -141,3 +141,5 @@ class GoogleSyncSearchService:
 
         except Exception as e:
             logger.error(f"❌ Ошибка: {e}", exc_info=True)
+
+google_sync_search_service = GoogleSyncSearchService()
