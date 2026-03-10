@@ -21,10 +21,13 @@ class GoogleSyncSearchService:
             num_match = re.search(r'\d+', s_val)
             return int(num_match.group()) if num_match else None
         if value_type == "ids":
-            ids = re.findall(r'\b\d+\b', s_val)
+            # Ищем все числа, фильтруем пустые
+            ids = [p for p in re.findall(r'\b\d+\b', s_val) if p]
             return ",".join(ids) if ids else None
         if value_type == "multi":
-            parts = [p.strip() for p in re.split(r'[\s\n]+', s_val) if p.strip()]
+            # Разделяем по пробелам, переносам строк ИЛИ запятым
+            # Фильтруем пустые элементы, чтобы не было двойных запятых
+            parts = [p.strip() for p in re.split(r'[\s\n,]+', s_val) if p.strip()]
             return ",".join(parts) if parts else None
         return s_val
 
