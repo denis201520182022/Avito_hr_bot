@@ -9,6 +9,7 @@ from app.db.models import (
     AvitoSearchStatus, 
     AvitoSearchStat
 )
+from app.core.config import settings
 from app.connectors.avito.client import avito
 from app.core.rabbitmq import mq
 from app.utils.redis_lock import get_redis_client
@@ -101,43 +102,36 @@ class AvitoSearchService:
             cursor_key = f"avito_search_cursor:{account.id}:{vacancy.id}"
             last_cursor = await redis.get(cursor_key)
 
-            # --- ФОРМИРОВАНИЕ ПАРАМЕТРОВ ПОИСКА ИЗ БД ---
-            f = vacancy.search_filters or {}
+            # 1. Берем фильтры из БД (они уже в идеальном формате благодаря синхронизатору)
+            filters = vacancy.search_filters or {}
             
-            # Базовый набор (всегда есть)
+            # 2. Формируем базовые параметры
+            # Используем только те имена полей, которые есть в Enum документации
+            requested_fields = (
+                "title,location,address_details,nationality,age,"
+                "education_level,total_experience,gender,salary,"
+                "driver_licence,driving_experience,medical_book"
+            )
+
             search_params = {
-                "query": f.get("query") or vacancy.title,
                 "per_page": 20,
-                "fields": "location,address_details,nationality,age,education,experience,driving"
+                "fields": requested_fields,
             }
 
-            # Маппинг всех гибких фильтров из вашей таблицы
-            # (Синхронизатор уже подготовил ID, здесь просто прокидываем их в API)
-            # Маппинг всех гибких фильтров из вашей таблицы
-            optional_fields = [
-                "location", "specialization", "schedule", "age_min", "age_max",
-                "gender", "education_level", "experience_min", "experience_max",
-                "nationality", "medical_book", "salary_min", "salary_max",
-                "driver_licence", "driver_licence_category", "driving_experience",
-                "own_transport", "business_trip_readiness", "relocation_readiness"
-            ]
+            # 3. Просто копируем ВСЕ фильтры из БД в параметры запроса
+            # Синхронизатор уже удалил None/Null, так что здесь просто переносим всё
+            for key, value in filters.items():
+                if value is not None:
+                    search_params[key] = value
 
-            for field in optional_fields:
-                val = f.get(field)
-                
-                # ПРОВЕРКА: 
-                # 1. Значение не None (уже обработано синхронизатором)
-                # 2. Значение не пустая строка
-                # 3. Значение не строка 'null'
-                if val is not None:
-                    str_val = str(val).strip()
-                    if str_val != "" and str_val.lower() != 'null':
-                        search_params[field] = val
+            # Если query пустой в фильтрах, используем название вакансии как запасной вариант
+            if not search_params.get("query"):
+                search_params["query"] = vacancy.title
 
             if last_cursor: 
                 search_params["cursor"] = last_cursor
 
-            # Выполнение запроса к API Авито
+            # 4. Выполнение запроса
             results = await avito.search_cvs(account, db, search_params)
             new_cursor = results.get("meta", {}).get("cursor")
             resumes = results.get("resumes", [])
@@ -147,12 +141,11 @@ class AvitoSearchService:
                 await redis.delete(cursor_key)
                 return
 
-            # Сохраняем новый курсор для следующего прогона
             if new_cursor:
-                await redis.set(cursor_key, str(new_cursor), ex=604800) # 7 дней жизни курсора
+                await redis.set(cursor_key, str(new_cursor), ex=604800)
 
             opened_count = 0
-            MAX_PER_RUN = 5 # Ограничение на один прогон для экономии
+            MAX_PER_RUN = 5 
 
             for cv in resumes:
                 if opened_count >= MAX_PER_RUN:
@@ -160,13 +153,12 @@ class AvitoSearchService:
 
                 resume_id = str(cv.get("id"))
 
-                # 1. Проверка на дубликаты (Бесплатно)
+                # Проверка на дубликаты
                 exists = await db.scalar(select(Candidate).filter_by(platform_user_id=resume_id))
                 if exists:
                     continue
 
-                # 2. АТОМАРНОЕ СПИСАНИЕ КВОТЫ ВАКАНСИИ
-                # Используем SQL update с условием, чтобы избежать race condition
+                # АТОМАРНОЕ СПИСАНИЕ КВОТЫ
                 quota_stmt = (
                     update(JobContext)
                     .where(and_(
@@ -184,21 +176,25 @@ class AvitoSearchService:
                     logger.warning(f"🛑 Квоты вакансии '{vacancy.title}' исчерпаны.")
                     break
 
+                if settings.features.dry_run_search:
+                    logger.info(f"🧪 [DRY RUN] Найдено резюме {resume_id}: {cv.get('title')}")
+                    continue
+                
                 try:
-                    # 3. ПОЛУЧЕНИЕ КОНТАКТОВ (Платно)
-                    logger.info(f"💰 Открываем контакты {resume_id} для вакансии '{vacancy.title}'. Остаток: {new_limit}")
+                    # ПОЛУЧЕНИЕ КОНТАКТОВ (Платно)
+                    logger.info(f"💰 Открываем контакты {resume_id} для '{vacancy.title}'. Остаток: {new_limit}")
                     contacts_data = await avito.get_resume_contacts(account, db, resume_id)
                     
                     contacts_list = contacts_data.get("contacts", [])
                     chat_id = next((c["value"] for c in contacts_list if c["type"] == "chat_id"), None)
                     
                     if not chat_id:
-                        logger.warning(f"У резюме {resume_id} нет chat_id. Лимит списан Авито за телефон.")
+                        logger.warning(f"У резюме {resume_id} нет chat_id.")
                         continue
 
-                    # 4. Обновление статистики и отправка в Engine
                     await self._update_daily_stats(db, account.id, vacancy.id)
 
+                    # Отправка в RabbitMQ
                     await mq.publish("avito_inbound", {
                         "source": "avito_search_found",
                         "account_id": account.id,
@@ -206,7 +202,7 @@ class AvitoSearchService:
                         "payload": {
                             "search_full_name": contacts_data.get("name"),
                             "search_phone": next((c["value"] for c in contacts_list if c["type"] == "phone"), None),
-                            "cv_data": cv # Полные данные резюме для LLM
+                            "cv_data": cv 
                         },
                         "chat_id": chat_id,
                         "resume_id": resume_id,
@@ -214,10 +210,9 @@ class AvitoSearchService:
                     })
                     
                     opened_count += 1
-                    await db.commit() # Фиксируем списание каждой квоты немедленно
+                    await db.commit() 
 
                 except Exception as api_err:
-                    # 5. ВОЗВРАТ КВОТЫ при системной ошибке запроса
                     logger.error(f"❌ Ошибка API для {resume_id}, возвращаем квоту: {api_err}")
                     await db.execute(
                         update(JobContext)
@@ -229,5 +224,5 @@ class AvitoSearchService:
 
         except Exception as e:
             logger.error(f"Ошибка в процессе поиска по вакансии {vacancy.id}: {e}", exc_info=True)
-
+            
 avito_search_service = AvitoSearchService()

@@ -57,6 +57,7 @@ class FeaturesConfig(BaseModel):
     enable_outbound_search: bool
     vacancy_description_source: str
     send_tg_interview_cards: bool
+    dry_run_search: bool
 
 class LLMConfig(BaseModel):
     main_model: str

@@ -22,7 +22,7 @@ from app.db.models import (
     AvitoSearchStatus, # <--- Заменить
     AvitoSearchStat
 )
-
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from app.db.models import TelegramUser, Account, AppSettings, Dialogue
 from app.tg_bot.filters import AdminFilter
 from app.tg_bot.keyboards import (
@@ -92,6 +92,7 @@ async def cancel_callback_handler(callback: CallbackQuery, state: FSMContext):
 
 # tg_bot/handlers/admin.py (ВАШ ФАЙЛ)
 
+# 1. Основное меню Баланса и Тарифов
 @router.message(F.text == "⚙️ Баланс и Тариф")
 async def limits_menu(message: Message, session: AsyncSession):
     settings = await session.get(AppSettings, 1)
@@ -99,44 +100,110 @@ async def limits_menu(message: Message, session: AsyncSession):
         await message.answer("❌ Не удалось загрузить настройки.")
         return
 
-    # Тянем статусы поиска (наши рубильники)
-    # Мы добавляем .options(selectinload(AvitoSearchStatus.account))
-    # Это заставит SQLAlchemy достать данные аккаунта ОДНИМ запросом вместе со статусом
-    status_stmt = (
-        select(AvitoSearchStatus)
-        .options(selectinload(AvitoSearchStatus.account))
-    )
+    # Краткий статус поиска для раздела "Поиск резюме"
+    status_stmt = select(AvitoSearchStatus).options(selectinload(AvitoSearchStatus.account))
     statuses = (await session.execute(status_stmt)).scalars().all()
+
+    search_status_text = ""
+    if statuses:
+        for s in statuses:
+            icon = "🟢 ВКЛ" if s.is_enabled else "🔴 ВЫКЛ"
+            search_status_text += f"• {s.account.name}: {icon}\n"
+    else:
+        search_status_text = "<i>Аккаунты не настроены</i>"
 
     stats = settings.stats or {}
     costs = settings.costs or {}
 
-    status_lines = []
-    if statuses:
-        for s in statuses:
-            state_icon = "✅ ВКЛ" if s.is_enabled else "❌ ВЫКЛ"
-            status_lines.extend([f"- {s.account.name} (ID {s.account_id}): ", Bold(state_icon), "\n"])
-    else:
-        status_lines.append(Italic("Аккаунты для поиска не настроены.\n"))
-
     content = Text(
-        Bold("📊 Управление системой:"), "\n\n",
-        "Текущий баланс: ", Bold(f"{settings.balance:.2f}"), " руб.\n\n",
-        
-        Bold("📈 История затрат (всего):"), "\n",
-        "- Потрачено на диалоги: ", Bold(f"{stats.get('spent_on_dialogues', 0):.2f}"), " руб.\n", 
-        
-        "\n💰 ", Bold("Тарифы:"), "\n",
+        Bold("📊 Баланс и Тарифы"), "\n\n",
+        "Текущий баланс: ", Bold(f"{settings.balance:.2f}"), " руб.\n",
         "Новый диалог: ", Bold(f"{costs.get('dialogue', 0):.2f}"), " руб.\n\n",
 
-        Bold("🔎 Глобальные рубильники поиска:"), "\n",
-        *status_lines,
-        "\n",
-        Italic("Квоты по вакансиям управляются через Google Таблицу."), "\n\n",
-        "🔔 Уведомление при балансе < ", Bold(f"{settings.low_balance_threshold:.2f}"), " руб."
+        Bold("🔍 Поиск резюме:"), "\n",
+        search_status_text, "\n",
+        
+        "🔔 Порог уведомления: ", Bold(f"{settings.low_balance_threshold:.2f}"), " руб."
     )
+
+    # Клавиатура с тремя кнопками
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⚙️ Установить баланс", callback_data="set_limit")
+    kb.button(text="💰 Установить тарифы", callback_data="set_tariff")
+    kb.button(text="🔎 Управление поиском", callback_data="manage_search")
+    kb.adjust(1)
     
-    await message.answer(**content.as_kwargs(), reply_markup=limits_menu_keyboard)
+    await message.answer(**content.as_kwargs(), reply_markup=kb.as_markup())
+
+
+# 2. Меню управления поиском (вызывается кнопкой "🔎 Управление поиском")
+@router.callback_query(F.data == "manage_search")
+async def manage_search_menu(callback: CallbackQuery, session: AsyncSession):
+    # Получаем все аккаунты и их статусы
+    # Сначала найдем все аккаунты Авито
+    acc_stmt = select(Account).where(Account.platform == 'avito')
+    accounts = (await session.execute(acc_stmt)).scalars().all()
+    
+    # Получаем существующие статусы
+    status_stmt = select(AvitoSearchStatus)
+    statuses = (await session.execute(status_stmt)).scalars().all()
+    status_map = {s.account_id: s.is_enabled for s in statuses}
+
+    sheet_url = "https://docs.google.com/spreadsheets/d/1njb64bZ2mT0S7lQgSGFRN5HD9fzMKnJ--6u-kWIC7es/edit#gid=77096499"
+    
+    text = (
+        "<b>🔎 Управление поиском резюме</b>\n\n"
+        f"📍 Настроить параметры и квоты можно в <a href='{sheet_url}'>Google Таблице</a>\n\n"
+        "Нажмите на кнопку аккаунта, чтобы включить или выключить поиск:"
+    )
+
+    kb = InlineKeyboardBuilder()
+    for acc in accounts:
+        is_on = status_map.get(acc.id, False)
+        btn_icon = "✅" if is_on else "❌"
+        kb.button(text=f"{btn_icon} {acc.name}", callback_data=f"toggle_search_{acc.id}")
+    
+    kb.button(text="⬅️ Назад", callback_data="back_to_limits")
+    kb.adjust(1)
+
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb.as_markup(), disable_web_page_preview=True)
+    await callback.answer()
+
+
+# 3. Обработчик переключения (рубильник)
+@router.callback_query(F.data.startswith("toggle_search_"))
+async def toggle_search_status(callback: CallbackQuery, session: AsyncSession):
+    acc_id = int(callback.data.split("_")[-1])
+    
+    # Ищем статус в БД
+    stmt = select(AvitoSearchStatus).filter_by(account_id=acc_id)
+    status = (await session.execute(stmt)).scalar_one_or_none()
+    
+    if not status:
+        # Если записи нет — создаем (по умолчанию выключен, нажатие включает)
+        status = AvitoSearchStatus(account_id=acc_id, is_enabled=True)
+        session.add(status)
+    else:
+        # Инвертируем состояние
+        status.is_enabled = not status.is_enabled
+    
+    await session.commit()
+    
+    # Обновляем это же меню, чтобы кнопка сразу изменилась
+    await manage_search_menu(callback, session)
+    await callback.answer("Статус поиска изменен")
+
+
+# 4. Возврат в основное меню
+@router.callback_query(F.data == "back_to_limits")
+async def back_to_limits(callback: CallbackQuery, session: AsyncSession):
+    # Просто вызываем функцию основного меню, но передаем callback.message
+    await callback.message.delete() # Удаляем старое, чтобы не дублировать
+    await limits_menu(callback.message, session)
+    await callback.answer()
+
+
+
 @router.callback_query(F.data == "set_limit")
 async def start_set_balance(callback: CallbackQuery, state: FSMContext):
     await state.set_state(SettingsManagement.set_balance)
@@ -195,51 +262,9 @@ async def process_set_cost_dialogue(message: Message, state: FSMContext, session
         await message.answer("❌ Ошибка в числе. Попробуйте еще раз.")
 
 
-@router.callback_query(F.data == "set_search_limit")
-async def start_toggle_search(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(SettingsManagement.set_search_balance)
-    await callback.message.answer(
-        "Управление рубильником поиска.\n\n"
-        "Введите ID аккаунта и статус (1 - ВКЛ, 0 - ВЫКЛ).\n"
-        "Пример: `1 1` (Включить поиск для аккаунта ID 1)\n"
-        "Пример: `1 0` (Выключить поиск для аккаунта ID 1)",
-        parse_mode="Markdown"
-    )
-    await callback.answer()
 
-@router.message(SettingsManagement.set_search_balance)
-async def process_toggle_search(message: Message, state: FSMContext, session: AsyncSession):
-    try:
-        parts = message.text.split()
-        if len(parts) != 2:
-            raise ValueError
-        
-        acc_id, status_val = int(parts[0]), int(parts[1])
-        is_on = True if status_val == 1 else False
-        
-        # Ищем или создаем запись статуса
-        stmt = select(AvitoSearchStatus).filter_by(account_id=acc_id)
-        result = await session.execute(stmt)
-        status = result.scalar_one_or_none()
-        
-        if not status:
-            # Если записи еще нет, создаем
-            status = AvitoSearchStatus(account_id=acc_id, is_enabled=is_on)
-            session.add(status)
-        else:
-            status.is_enabled = is_on
-            
-        await session.commit()
-        await state.clear()
-        
-        state_text = "ВКЛЮЧЕН" if is_on else "ВЫКЛЮЧЕН"
-        await message.answer(f"✅ Поиск для аккаунта ID {acc_id} теперь {state_text}.", reply_markup=admin_keyboard)
-    
-    except (ValueError, IndexError):
-        await message.answer("❌ Неверный формат. Введите `ID СТАТУС` (например: `1 1`).")
-    except Exception as e:
-        logger.error(f"Ошибка при переключении рубильника: {e}")
-        await message.answer("❌ Ошибка. Проверьте, существует ли аккаунт с таким ID.")
+
+
 
 
 # --- 1. УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ---

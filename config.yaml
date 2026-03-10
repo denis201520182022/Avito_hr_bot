@@ -23,6 +23,7 @@ features:
   enable_outbound_search: false    # Включить/выключить поиск по базе и инициацию
   vacancy_description_source: "platform" # "platform" (из Авито) или "google_doc"
   send_tg_interview_cards: true    # Отправлять ли карточку кандидата в ТГ после записи
+  dry_run_search: true
 
 # База знаний (Google Docs)
 knowledge_base:
