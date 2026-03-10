@@ -19,44 +19,48 @@ logger = logging.getLogger("AvitoSearch")
 class AvitoSearchService:
     async def discover_and_propose(self):
         """Основной цикл: обход аккаунтов и запуск поиска по вакансиям"""
-        async with AsyncSessionLocal() as db:
-            # 1. Получаем все активные аккаунты Авито
-            stmt = select(Account).filter_by(platform="avito", is_active=True)
-            accounts = (await db.execute(stmt)).scalars().all()
-
-            for acc in accounts:
-                # 2. ПРОВЕРКА ГЛОБАЛЬНОГО РУБИЛЬНИКА (из таблицы AvitoSearchStatus)
-                status_stmt = select(AvitoSearchStatus).filter_by(account_id=acc.id)
-                status = await db.scalar(status_stmt)
-                
-                if not status or not status.is_enabled:
-                    logger.info(f"⏸ Поиск для аккаунта '{acc.name}' (ID: {acc.id}) выключен пользователем.")
-                    continue
-
-                # 3. Получаем активные вакансии аккаунта, у которых остались квоты
-                vac_stmt = select(JobContext).filter(
-                    and_(
-                        JobContext.account_id == acc.id,
-                        JobContext.is_active == True,
-                        JobContext.search_remaining_quota > 0
-                    )
-                )
-                vacancies = (await db.execute(vac_stmt)).scalars().all()
-
-                if not vacancies:
-                    logger.debug(f"Нет активных вакансий с лимитами для аккаунта {acc.name}")
-                    continue
-
-                for vac in vacancies:
-                    # 4. Проверка: не закрыта ли вакансия на самом Авито?
-                    is_still_active = await self._check_avito_vacancy_status(acc, vac, db)
+        try:
+            async with AsyncSessionLocal() as db:
+                # 1. Получаем все активные аккаунты Авито
+                stmt = select(Account).filter_by(platform="avito", is_active=True)
+                accounts = (await db.execute(stmt)).scalars().all()
+                logger.info(f"Найдено активных аккаунтов Авито для поиска: {len(accounts)}")
+                for acc in accounts:
+                    # 2. ПРОВЕРКА ГЛОБАЛЬНОГО РУБИЛЬНИКА (из таблицы AvitoSearchStatus)
+                    status_stmt = select(AvitoSearchStatus).filter_by(account_id=acc.id)
+                    status = await db.scalar(status_stmt)
                     
-                    if is_still_active:
-                        await self._search_for_vacancy(acc, vac, db)
-                    else:
-                        logger.info(f"🚫 Вакансия '{vac.title}' ({vac.external_id}) деактивирована на Авито. Пропускаем.")
-            
-            await db.commit()
+                    if not status or not status.is_enabled:
+                        logger.info(f"⏸ Поиск для аккаунта '{acc.name}' (ID: {acc.id}) выключен пользователем.")
+                        continue
+
+                    # 3. Получаем активные вакансии аккаунта, у которых остались квоты
+                    vac_stmt = select(JobContext).filter(
+                        and_(
+                            JobContext.account_id == acc.id,
+                            JobContext.is_active == True,
+                            JobContext.search_remaining_quota > 0
+                        )
+                    )
+                    vacancies = (await db.execute(vac_stmt)).scalars().all()
+
+                    if not vacancies:
+                        logger.debug(f"Нет активных вакансий с лимитами для аккаунта {acc.name}")
+                        continue
+
+                    for vac in vacancies:
+                        # 4. Проверка: не закрыта ли вакансия на самом Авито?
+                        is_still_active = await self._check_avito_vacancy_status(acc, vac, db)
+                        
+                        if is_still_active:
+                            await self._search_for_vacancy(acc, vac, db)
+                        else:
+                            logger.info(f"🚫 Вакансия '{vac.title}' ({vac.external_id}) деактивирована на Авито. Пропускаем.")
+                
+                await db.commit()
+        except Exception as e:
+            logger.error(f"ОШИБКА В discover_and_propose: {e}", exc_info=True)
+
 
     async def _check_avito_vacancy_status(self, account, vacancy, db) -> bool:
         """Синхронизация статуса вакансии с API Авито"""
@@ -224,5 +228,5 @@ class AvitoSearchService:
 
         except Exception as e:
             logger.error(f"Ошибка в процессе поиска по вакансии {vacancy.id}: {e}", exc_info=True)
-            
+
 avito_search_service = AvitoSearchService()
