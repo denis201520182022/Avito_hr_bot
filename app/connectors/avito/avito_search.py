@@ -19,6 +19,7 @@ logger = logging.getLogger("AvitoSearch")
 class AvitoSearchService:
     async def discover_and_propose(self):
         """Основной цикл: обход аккаунтов и запуск поиска по вакансиям"""
+        logger.info(f"начало discover_and_propose до открытия транзакции")
         try:
             async with AsyncSessionLocal() as db:
                 # 1. Получаем все активные аккаунты Авито
