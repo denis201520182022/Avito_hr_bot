@@ -94,10 +94,13 @@ class GoogleSyncSearchService:
                         # --- ОБРАБОТКА КВОТ ---
                         quota_to_add = self._parse_value(all_values[3][col_idx], "int")
                         if quota_to_add:
-                            vacancy.search_remaining_quota += quota_to_add
+                            # Если в БД сейчас None, заменяем на 0 перед прибавлением
+                            current_quota = vacancy.search_remaining_quota or 0
+                            vacancy.search_remaining_quota = current_quota + quota_to_add
+                            logger.info(f"Вакансия {ext_id}: добавлено {quota_to_add} квот.")
                         
                         # Готовим обновление ячеек (только строки 3, 4, 5)
-                        col_letter = gspread.utils.rowcol_to_a1(1, col_idx + 1)[:1] # буква колонки
+                        col_letter = re.sub(r'\d+', '', gspread.utils.rowcol_to_a1(1, col_idx + 1))
                         # Строка 3: Название (вдруг сменилось)
                         updates.append({'range': f'{col_letter}3', 'values': [[vacancy.title]]})
                         # Строка 4: Сброс ввода квот в 0/пусто
@@ -115,14 +118,14 @@ class GoogleSyncSearchService:
                 for ext_id, vac in db_vac_map.items():
                     if ext_id not in processed_ids_in_sheet:
                         current_last_col += 1
-                        col_letter = gspread.utils.rowcol_to_a1(1, current_last_col)[:1]
+                        col_letter = re.sub(r'\d+', '', gspread.utils.rowcol_to_a1(1, current_last_col))
                         
                         # Пишем базу для новой вакансии (ID, Название, Пустая квота, Остаток)
                         new_vac_data = [
                             [vac.external_id], # Строка 2
                             [vac.title],       # Строка 3
                             [''],              # Строка 4
-                            [str(vac.search_remaining_quota)] # Строка 5
+                            [str(vac.search_remaining_quota or 0)]
                         ]
                         updates.append({'range': f'{col_letter}2:{col_letter}5', 'values': new_vac_data})
                         logger.info(f"Добавлена новая вакансия в колонку {col_letter}")
