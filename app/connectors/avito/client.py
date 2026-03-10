@@ -300,16 +300,44 @@ class AvitoClient:
         
         # Заголовок и ссылка
         lines.append(f"📋 ВАКАНСИЯ: {vac.get('title', 'Не указано')}")
-        if vac.get('url'):
-            lines.append(f"🔗 Ссылка: https://www.avito.ru{vac.get('url')}")
+        # "if vac.get('url'):
+        #     lines.append(f"🔗 Ссылка: https://www.avito.ru{vac.get('url')}")"
         lines.append("")
 
-        # Зарплата (может быть числом или объектом)
-        salary = vac.get('salary')
-        if isinstance(salary, dict):
-            lines.append(f"💰 Зарплата: от {salary.get('from')} до {salary.get('to')} руб.")
-        elif salary:
-            lines.append(f"💰 Зарплата: {salary} руб.")
+        # --- ОБНОВЛЕННАЯ ЛОГИКА ЗАРПЛАТЫ ---
+        # 1. Пытаемся взять детальную вилку из params
+        params_salary = vac.get("params", {}).get("salary")
+        # 2. Берем значение из корня для подстраховки
+        root_salary = vac.get("salary")
+        
+        salary_text = None
+
+        # Сначала проверяем вилку в params (она там обычно всегда объект)
+        if isinstance(params_salary, dict):
+            s_from = params_salary.get("from")
+            s_to = params_salary.get("to")
+            if s_from and s_to:
+                salary_text = f"💰 Зарплата: от {s_from} до {s_to} руб."
+            elif s_from:
+                salary_text = f"💰 Зарплата: от {s_from} руб."
+            elif s_to:
+                salary_text = f"💰 Зарплата: до {s_to} руб."
+
+        # Если в params пусто, проверяем корень (там может быть и число, и объект)
+        if not salary_text and root_salary:
+            if isinstance(root_salary, dict):
+                s_from = root_salary.get("from")
+                s_to = root_salary.get("to")
+                if s_from and s_to:
+                    salary_text = f"💰 Зарплата: от {s_from} до {s_to} руб."
+                else:
+                    salary_text = f"💰 Зарплата: {s_from or s_to} руб."
+            else:
+                salary_text = f"💰 Зарплата: {root_salary} руб."
+
+        if salary_text:
+            lines.append(salary_text)
+        # ----------------------------------
         
         # Локация и координаты
         addr = vac.get('addressDetails', {})

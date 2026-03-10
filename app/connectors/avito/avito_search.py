@@ -13,8 +13,8 @@ from app.core.config import settings
 from app.connectors.avito.client import avito
 from app.core.rabbitmq import mq
 from app.utils.redis_lock import get_redis_client
+from app.utils.logger import logger
 
-logger = logging.getLogger("AvitoSearch")
 
 class AvitoSearchService:
     async def discover_and_propose(self):
