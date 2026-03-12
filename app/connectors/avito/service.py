@@ -699,7 +699,4 @@ class AvitoConnectorService:
             raise e
 
 # Синглтон сервиса
-avito_connector = AvitoConnectorService()
-
-
-logger = logging.getLogger("avito.service")
+avito_connector = AvitoConnectorService()
