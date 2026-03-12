@@ -300,8 +300,9 @@ class AvitoConnectorService:
                         # БД зафиксирует is_active=False (внутри _sync_vacancy), но диалог не создастся/не обновится.
                         await db.commit() # Сохраняем статус вакансии
                         return 
-                except:
-                    logger.info(f"ℹ️ Контекст объявления {item_id} не подтянут, продолжаем.")
+                except Exception as e:
+                    logger.error(f"⚠️ Ошибка при подтягивании контекста объявления {item_id}: {e}", exc_info=True)
+                    logger.info(f"ℹ️ Контекст объявления {item_id} не подтянут из-за ошибки, продолжаем обработку сообщения.")
 
             if dialogue:
                 # --- ЛОГИКА ДЛЯ СУЩЕСТВУЮЩЕГО ДИАЛОГА ---
@@ -470,15 +471,18 @@ class AvitoConnectorService:
             # Пытаемся получить детали как вакансию
             try:
                 vac_details = await avito.get_job_details(item_id_str, account, db)
+                logger.info(f"✅ Получены детали вакансии {vac_details}")
             except Exception as e:
                 # Если не вакансия — идем в Core API
                 logger.info(f"ℹ️ {item_id_str} проверяем через Core API...")
                 vac_details = await avito.get_item_details(item_id_str, account, db)
+                logger.info(f"✅ Получены детали вакансии {vac_details}")
 
             # Если API что-то вернуло
             if vac_details:
                 api_status = getattr(vac_details, 'status', 'unknown')
                 job.is_active = (api_status == 'active') # ЖЕСТКАЯ ПРОВЕРКА
+                logger.info(f"✅ Статус API для {item_id_str}: {api_status} (is_active={job.is_active})")
                 job.title = vac_details.title
                 job.city = vac_details.city
                 job.description_data = {"text": vac_details.description, "status": api_status}
@@ -639,6 +643,10 @@ class AvitoConnectorService:
         return dialogue
 
     async def _update_history_only(self, dialogue: Dialogue, account: Account, chat_id: str, db: AsyncSession):
+        # ВРЕМЕННО ОТКЛЮЧЕНО: по просьбе оставляем только вебхуки
+        logger.info(f"ВРЕМЕННО ОТКЛЮЧЕНО: Синхронизация истории через API для чата {chat_id}")
+        return
+
         try:
             user_id = account.auth_data.get("user_id", "me")
             api_messages = await avito.get_chat_messages(user_id, chat_id, account, db)

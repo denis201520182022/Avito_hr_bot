@@ -8,20 +8,6 @@ source .venv/bin/activate
 
 docker compose up -d --build
 docker compose down
-docker logs avito_hr_bot
-
-
-tail -f logs/fastapi.log
-
-tail -f logs/engine.log
-tail -n 20 logs/tg_worker_err.log
-
-tail -f logs/connector.log
-tail -f logs/connector_err.log
-tail -n 20 logs/engine_err.log
-tail -n 20 logs/scheduler_err.log
-tail -f logs/tg_worker.log
-
 
 
 docker logs -f avito_hr_bot
@@ -31,18 +17,7 @@ tail -f logs/*.log
 docker compose exec rabbitmq rabbitmqctl purge_queue engine_tasks
 docker compose exec redis redis-cli FLUSHALL
 
-
-
-
-
-
-
-
-
-
-Ресетнуть диалог:
-docker exec -it avito_hr_bot python reset_test.py u2i-NyF0fdvl9bDIzxRgvbA61Q
-
+docker logs -f avito_hr_bot
 
 
 Удалить диалог
