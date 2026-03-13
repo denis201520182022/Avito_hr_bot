@@ -22,6 +22,7 @@ from app.db.models import (
     AvitoSearchStatus, # <--- Заменить
     AvitoSearchStat
 )
+from sqlalchemy.orm import selectinload, joinedload 
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from app.db.models import TelegramUser, Account, AppSettings, Dialogue
 from app.tg_bot.filters import AdminFilter
@@ -101,7 +102,7 @@ async def limits_menu(message: Message, session: AsyncSession):
         return
 
     # Краткий статус поиска для раздела "Поиск резюме"
-    status_stmt = select(AvitoSearchStatus).options(selectinload(AvitoSearchStatus.account))
+    status_stmt = select(AvitoSearchStatus).options(joinedload(AvitoSearchStatus.account))
     statuses = (await session.execute(status_stmt)).scalars().all()
 
     search_status_text = ""
@@ -118,12 +119,12 @@ async def limits_menu(message: Message, session: AsyncSession):
     content = Text(
         Bold("📊 Баланс и Тарифы"), "\n\n",
         "Текущий баланс: ", Bold(f"{settings.balance:.2f}"), " руб.\n",
-        "Новый диалог: ", Bold(f"{costs.get('dialogue', 0):.2f}"), " руб.\n\n",
+        "Тариф для нового диалога: ", Bold(f"{costs.get('dialogue', 0):.2f}"), " руб.\n\n",
 
-        Bold("🔍 Поиск резюме:"), "\n",
+        Bold("🔍 Глобальный статус Поиса резюме:"), "\n",
         search_status_text, "\n",
         
-        "🔔 Порог уведомления: ", Bold(f"{settings.low_balance_threshold:.2f}"), " руб."
+        "🔔 Порог когда придет оповещение о низком балансе: ", Bold(f"{settings.low_balance_threshold:.2f}"), " руб."
     )
 
     # Клавиатура с тремя кнопками
