@@ -119,9 +119,10 @@ async def limits_menu(message: Message, session: AsyncSession):
     content = Text(
         Bold("📊 Баланс и Тарифы"), "\n\n",
         "Текущий баланс: ", Bold(f"{settings.balance:.2f}"), " руб.\n",
-        "Тариф для нового диалога: ", Bold(f"{costs.get('dialogue', 0):.2f}"), " руб.\n\n",
+        "💰 ", Bold("Тарифы:"), "\n",
+        "Новый диалог:  ", Bold(f"{costs.get('dialogue', 0):.2f}"), " руб.\n\n",
 
-        Bold("🔍 Глобальный статус Поиса резюме:"), "\n",
+        Bold("🔍 Режим поиска резюме: "), "\n",
         search_status_text, "\n",
         
         "🔔 Порог когда придет оповещение о низком балансе: ", Bold(f"{settings.low_balance_threshold:.2f}"), " руб."

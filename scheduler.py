@@ -16,6 +16,8 @@ from app.services.knowledge_base import kb_service
 from sqlalchemy.orm import selectinload
 from app.services.google_sync_search import google_sync_search_service
 from app.utils.logger import logger, set_log_context, log_context
+from app.utils.analytics import log_event
+from app.db.models import Account, JobContext, Candidate, Dialogue, AppSettings
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
@@ -152,13 +154,15 @@ class Scheduler:
                             if reminder_cfg.stop_bot:
                                 dialogue.status = 'timed_out'
                                 logger.info(f"zzz Диалог {dialogue.id} -> timed_out.")
-                                db.add(AnalyticsEvent(
-                                    account_id=dialogue.account_id,
-                                    job_context_id=dialogue.vacancy_id,
-                                    dialogue_id=dialogue.id,
+                                # --- ЗАМЕНА ЗДЕСЬ ---
+                                await log_event(
+                                    db=db,
+                                    dialogue=dialogue,
                                     event_type='timed_out',
                                     event_data={"final_level": new_level, "tz": tz_name}
-                                ))
+                                )
+                                # --------------------
+
                     
                     await db.commit()
 

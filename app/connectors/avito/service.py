@@ -13,7 +13,8 @@ from app.db.session import AsyncSessionLocal
 from app.db.models import Account, JobContext, Candidate, Dialogue, AppSettings, AnalyticsEvent
 from app.core.rabbitmq import mq
 from app.utils.redis_lock import get_redis_client
-
+from app.db.models import Account, JobContext, Candidate, Dialogue, AppSettings
+from app.utils.analytics import log_event 
 from .client import avito
 
 from app.utils.logger import logger, set_log_context, log_context
@@ -634,10 +635,12 @@ class AvitoConnectorService:
             await db.rollback()
             raise e
         
-        db.add(AnalyticsEvent(
-            account_id=account.id, job_context_id=job.id if job else None, dialogue_id=dialogue.id,
-            event_type='lead_created', event_data={"cost": float(cost_per_dialogue), "trigger": trigger_source}
-        ))
+        await log_event(
+            db=db,
+            dialogue=dialogue,
+            event_type='lead_created',
+            event_data={"cost": float(cost_per_dialogue), "trigger": trigger_source}
+        )
 
         await self._update_history_only(dialogue, account, chat_id, db)
         return dialogue
@@ -699,4 +702,4 @@ class AvitoConnectorService:
             raise e
 
 # Синглтон сервиса
-avito_connector = AvitoConnectorService()
+avito_connector = AvitoConnectorService()

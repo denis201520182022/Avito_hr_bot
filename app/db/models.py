@@ -206,21 +206,23 @@ class InterviewFollowup(Base):
 class AnalyticsEvent(Base):
     """
     Таблица для мгновенной статистики. 
-    Сюда пишем каждый важный чих системы.
     """
     __tablename__ = 'analytics_events'
     
     id = Column(Integer, primary_key=True)
-    account_id = Column(Integer, ForeignKey('accounts.id'))
-    job_context_id = Column(Integer, ForeignKey('job_contexts.id'))
-    dialogue_id = Column(Integer, ForeignKey('dialogues.id'))
+    account_id = Column(Integer, ForeignKey('accounts.id'), index=True)
+    job_context_id = Column(Integer, ForeignKey('job_contexts.id'), index=True, nullable=True)
+    dialogue_id = Column(Integer, ForeignKey('dialogues.id'), index=True)
     
-
     event_type = Column(String(50), index=True)
     
-    # Доп. данные (например, причина отказа или модель ИИ)
+    # --- НОВЫЕ ПОЛЯ ---
+    city = Column(String(100), index=True) # Для срезов по городам
+    interview_date = Column(Date, index=True, nullable=True) # Для доходимости
+    mode = Column(String(50), index=True, server_default='standard') # 'standard' (задел на будущее)
+    # ------------------
+
     event_data = Column(JSONB, server_default='{}')
-    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

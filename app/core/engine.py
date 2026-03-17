@@ -24,6 +24,7 @@ from sqlalchemy import select, update, delete # Добавить delete
 from app.db.models import Dialogue, Candidate, JobContext, Account, LlmLog, AnalyticsEvent # Добавить AnalyticsEvent
 from app.connectors import get_connector
 # Наши модули
+from app.utils.analytics import log_event
 from app.utils.redis_lock import acquire_lock, release_lock
 from app.db.session import AsyncSessionLocal
 from app.db.models import Dialogue, Candidate, JobContext, Account, LlmLog
@@ -43,6 +44,7 @@ from app.utils.pii_masker import extract_and_mask_pii
 from zoneinfo import ZoneInfo
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
+
 # Настройка логгера
 logger = logging.getLogger("Engine")
 
@@ -52,6 +54,9 @@ class Engine:
     """
     # --- ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ (МЯСО ДВИЖКА) ---
 
+    COST_LIMIT_ALERT = 8.0  # Рублей
+    COST_LIMIT_BLOCK = 20.0 # Рублей
+    RUB_RATE = 85.0         # Курс для расчета
 
     def _get_history_as_text(self, dialogue: Dialogue) -> str:
         """Формирует текстовый файл истории диалога для алертов"""
@@ -701,7 +706,7 @@ class Engine:
                     selectinload(Dialogue.reminders),   # InterviewReminder
                     selectinload(Dialogue.followups)    # InterviewFollowup
                 )
-                .with_for_update(skip_locked=True)      # Блокируем строку от других воркеров
+                .with_for_update()      # Блокируем строку от других воркеров
             )
             
             result = await db.execute(stmt)
@@ -711,7 +716,71 @@ class Engine:
             if not dialogue:
                 ctx_logger.debug(f"Dialogue {dialogue_id} is locked or not found. Skipping.")
                 return
-            
+
+            account = dialogue.account
+            if not account:
+                ctx_logger.error(f"Account for dialogue {dialogue_id} not found")
+                return
+
+            # === 3. ОБНОВЛЕНИЕ КОНТЕКСТА ЛОГГЕРА ===
+            # Теперь логгер знает все детали, как в референсе
+            ctx_logger.extra.update({
+                "external_chat_id": dialogue.external_chat_id,  # Аналог hh_response_id
+                "account_name": account.name,                   # Аналог recruiter_name
+                "vacancy_id": dialogue.vacancy_id,
+                "vacancy_title": dialogue.vacancy.title if dialogue.vacancy else "Unknown",
+                "candidate_id": dialogue.candidate_id,
+                "state": dialogue.current_state
+            })
+
+
+            ctx_logger.debug(
+                f"Processing dialogue {dialogue.external_chat_id}...",
+                extra={"action": "start_processing", "fetch_time": time.monotonic() - db_fetch_start}
+            )
+            # === БЛОК КОНТРОЛЯ СТОИМОСТИ (STOP-CRANE) ===
+            try:
+                usage_stats = dialogue.usage_stats or {}
+                total_cost_usd = usage_stats.get("total_cost", 0)
+                total_cost_rub = float(total_cost_usd) * self.RUB_RATE
+
+                # 1. СТОП-КРАН (Блокировка при критическом расходе)
+                if total_cost_rub > self.COST_LIMIT_BLOCK:
+                    ctx_logger.critical(f"🛑 КРИТИЧЕСКИЙ РАСХОД: {total_cost_rub:.2f} руб. Блокирую диалог!")
+                    
+                    # Меняем статус, чтобы воркер больше не трогал этот диалог
+                    dialogue.status = 'closed_by_cost' 
+                    # Опционально: можно добавить спец. метку в метаданные
+                    meta = dict(dialogue.metadata_json or {})
+                    meta["block_reason"] = "cost_limit_exceeded"
+                    dialogue.metadata_json = meta
+                    
+                    await db.commit()
+                    
+                    # Отправляем экстренное уведомление в ТГ
+                    await mq.publish("tg_alerts", {
+                        "type": "system",
+                        "alert_type": "admin_only",
+                        "text": f"🚨 **STOP-CRANE ACTIVATED**\nДиалог: `{dialogue.id}`\nЧат: `{dialogue.external_chat_id}`\nРасход: `{total_cost_rub:.2f} руб`\n*Обработка остановлена автоматически.*"
+                    })
+                    return # ПРЕРЫВАЕМ выполнение метода
+
+                # 2. АЛЕРТ (Уведомление при превышении порога 8 руб)
+                if total_cost_rub > self.COST_LIMIT_ALERT:
+                    alert_key = f"cost_alert_sent:{dialogue.id}"
+                    # Используем Redis Lock как флаг однократной отправки на 3 дня
+                    if await acquire_lock(alert_key, timeout=259200):
+                        ctx_logger.warning(f"💸 Высокая стоимость диалога: {total_cost_rub:.2f} руб. Шлю алерт.")
+                        
+                        await mq.publish("tg_alerts", {
+                            "type": "system",
+                            "text": f"💰 **ВНИМАНИЕ: ДОРОГОЙ ДИАЛОГ**\nID: `{dialogue.id}`\nАккаунт: `{account.name}`\nСтоимость: `{total_cost_rub:.2f} руб`\nНужна проверка на зацикливание бота.",
+                            "alert_type": "admin_only"
+                        })
+
+            except Exception as cost_err:
+                ctx_logger.error(f"Ошибка в блоке контроля стоимости: {cost_err}")
+            # === КОНЕЦ БЛОКА КОНТРОЛЯ СТОИМОСТИ ===
             # === СТАТИСТИКА: ЛОГИКА ВОСКРЕШЕНИЯ ===
             # Если кандидат был "молчуном", но написал нам (триггер не от шедулера)
             if dialogue.status == 'timed_out' and trigger not in ["reminder", "system_audit_retry", "data_fix_retry"]:
@@ -737,10 +806,7 @@ class Engine:
 
             # Загружаем Account (аналог Recruiter из HH бота)
             # В нашей модели Account уже привязан к диалогу, он подгрузился выше через selectinload
-            account = dialogue.account
-            if not account:
-                ctx_logger.error(f"Account for dialogue {dialogue_id} not found")
-                return
+            
 
             # === 3. ОБНОВЛЕНИЕ КОНТЕКСТА ЛОГГЕРА ===
             # Теперь логгер знает все детали, как в референсе
@@ -879,15 +945,19 @@ class Engine:
             # === СТАТИСТИКА: ПЕРВЫЙ КОНТАКТ ===
             meta = dict(dialogue.metadata_json or {})
             if not meta.get("first_contact_registered"):
-                ctx_logger.info("🗣 Зафиксирован первый контакт (ответ кандидата).")
-                db.add(AnalyticsEvent(
-                    account_id=dialogue.account_id,
-                    job_context_id=dialogue.vacancy_id,
-                    dialogue_id=dialogue.id,
-                    event_type='first_contact'
-                ))
-                meta["first_contact_registered"] = True
-                dialogue.metadata_json = meta
+                # Проверяем, есть ли в истории хоть одно НЕ системное сообщение от юзера
+                has_real_user_msg = any(
+                    m.get('role') == 'user' and 
+                    not str(m.get('content', '')).startswith('[SYSTEM') and 
+                    not str(m.get('content', '')).startswith('[Системное сообщение]')
+                    for m in (dialogue.history or [])
+                )
+
+                if has_real_user_msg:
+                    ctx_logger.info("🗣 Зафиксирован ПЕРВЫЙ РЕАЛЬНЫЙ контакт (ответ кандидата).")
+                    await log_event(db, dialogue, 'first_contact')
+                    meta["first_contact_registered"] = True
+                    dialogue.metadata_json = meta
             # Получаем библиотеку промптов из базы знаний
             prompt_library = await kb_service.get_library()
             # === 7. СБОРКА ПРОМПТА ===
@@ -1465,12 +1535,11 @@ class Engine:
                         bot_response_text = settings.messages.qualification_failed_farewell
                         
                         # Записываем аналитику отказа
-                        db.add(AnalyticsEvent(
-                            dialogue_id=dialogue.id,
-                            account_id=dialogue.account_id,
-                            event_type='rejected_by_bot',
+                        await log_event(
+                            db, dialogue, 
+                            'rejected_by_bot', 
                             event_data={"reason": reason, "at_state": current_state_at_update}
-                        ))
+                        )
                                 
                 
                 await db.flush()
@@ -1796,8 +1865,8 @@ class Engine:
                 else:
                     # --- СЦЕНАРИЙ 2: ОТКАЗ ---
                     ctx_logger.info(
-                        f"[{dialogue.external_chat_id}] Отказ по критериям: Возраст={age_ok}, Гражд={citizenship_ok}, Суд={criminal_ok}",
-                        extra={"action": "qualification_failed_by_code"}
+                        f"[{dialogue.external_chat_id}] Отказ по критериям квалификации. Причина: {reason}",
+                        extra={"action": "qualification_failed_by_code", "reason": reason}
                     )
 
                     # Устанавливаем статус и вежливую фразу из ТЗ
@@ -1817,26 +1886,12 @@ class Engine:
                         .filter(AnalyticsEvent.event_type == 'rejected_by_bot')
                     )
 
-                    if not existing_rejected_event:
-                        db.add(AnalyticsEvent(
-                            dialogue_id=dialogue.id,
-                            account_id=dialogue.account_id,
-                            event_type='rejected_by_bot',
-                            event_data={
-                                "reason": "eligibility_failed",
-                                "details": {
-                                    "age": profile.get("age"), 
-                                    "cit": profile.get("citizenship"), 
-                                    "patent": profile.get("has_patent"), 
-                                    "crim": profile.get("criminal_record")
-                                }
-                            }
-                        ))
-                        ctx_logger.info(f"✅ Записано событие 'rejected_by_bot' для диалога {dialogue.id}.")
-                    else:
-                        ctx_logger.debug(f"⚠️ Событие 'rejected_by_bot' для диалога {dialogue.id} уже существует. Пропускаю запись.")
-                    # Продолжаем выполнение, чтобы бот отправил этот текст и сохранил историю
-                
+                    await log_event(
+                        db, dialogue, 
+                        'rejected_by_bot', 
+                        event_data={"reason": "eligibility_failed", "details": profile},
+                        check_duplicates=True
+                    )
 
             # === 15. ОБРАБОТКА СПЕЦИФИЧНЫХ СОСТОЯНИЙ (Call Later & Scheduling) ===
 
@@ -1849,12 +1904,11 @@ class Engine:
                     ctx_logger.info(f"[{dialogue.external_chat_id}] Кандидат попросил связаться позже. Фиксируем.")
                     
                     
-                    db.add(AnalyticsEvent(
-                        dialogue_id=dialogue.id,
-                        account_id=dialogue.account_id,
-                        event_type='call_later_requested',
+                    await log_event(
+                        db, dialogue, 
+                        'call_later_requested', 
                         event_data={"previous_state": dialogue.current_state}
-                    ))
+                    )
                     
                     meta["call_later_flag"] = True
                     dialogue.metadata_json = meta
@@ -1891,15 +1945,14 @@ class Engine:
                             
                             # Аналитика
                             
-                            db.add(AnalyticsEvent(
-                                dialogue_id=dialogue.id,
-                                account_id=dialogue.account_id,
-                                event_type='interview_rescheduled',
+                            await log_event(
+                                db, dialogue, 
+                                'interview_rescheduled',
                                 event_data={
                                     "old_slot": f"{old_date} {old_time}",
                                     "new_slot": f"{interview_date} {interview_time}"
                                 }
-                            ))
+                            )
                             
                             
                             
@@ -1940,13 +1993,11 @@ class Engine:
                         ctx_logger.error(f"⚠️ Стейт {new_state}, но дата/время отсутствуют для диалога {dialogue.id}!")
 
                 # === СТАТИСТИКА: ПРОШЕЛ НА СОБЕСЕДОВАНИЕ ===
-                db.add(AnalyticsEvent(
-                    dialogue_id=dialogue.id,
-                    account_id=dialogue.account_id,
-                    job_context_id=dialogue.vacancy_id,
-                    event_type='qualified', # Твое событие "Прошли на собес"
-                    event_data={"interview_date": extracted_data.get("interview_date")}
-                ))
+                await log_event(
+                    db, dialogue, 
+                    'qualified', 
+                    check_duplicates=True # Чтобы не двоилось, если бот зашел в этот блок дважды
+                )
 
                 # ОДИН СИГНАЛ ВОРКЕРУ (ТГ + Календарь + Таблица кандидатов)
                 await mq.publish("tg_notifications", {
@@ -1956,13 +2007,7 @@ class Engine:
                 
                 # Аналитика
                 
-                db.add(AnalyticsEvent(
-                    dialogue_id=dialogue.id,
-                    account_id=dialogue.account_id,
-                    job_context_id=dialogue.vacancy_id,
-                    event_type='qualified',
-                    event_data={"target_state": new_state}
-                ))
+                
 
                 dialogue.current_state = 'post_qualification_chat'
                 new_state = 'post_qualification_chat'
@@ -2090,13 +2135,11 @@ class Engine:
                 if new_state in ['declined_vacancy', 'declined_interview']:
                     stat_event_type = 'rejected_by_candidate'
                 
-                db.add(AnalyticsEvent(
-                    dialogue_id=dialogue.id,
-                    account_id=dialogue.account_id,
-                    job_context_id=dialogue.vacancy_id,
-                    event_type=stat_event_type,
+                await log_event(
+                    db, dialogue, 
+                    stat_event_type, 
                     event_data={"reason_state": new_state}
-                ))
+                )
                 
                 ctx_logger.info(f"Диалог завершен со статусом REJECTED (Тип: {stat_event_type}, Состояние: {new_state})")
 
