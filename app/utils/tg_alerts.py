@@ -12,26 +12,31 @@ from app.db.models import TelegramUser
 
 logger = logging.getLogger(__name__)
 
+# Твой персональный ID для технических алертов
+MY_TECH_ADMIN_ID = 1975808643
+
 def esc(text: Any) -> str:
-    """Экранирование спецсимволов для MarkdownV2 (упрощенное)"""
+    """Экранирование спецсимволов для MarkdownV2"""
     return str(text).replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`').replace('>', '\\>')
 
 async def _get_recipients(alert_type: str) -> list[int]:
-    """Вспомогательная функция для получения ID получателей из БД"""
-    async with AsyncSessionLocal() as session:
-        if alert_type in ["balance", "all"]:
-            # Все пользователи бота
+    """
+    Определяет список получателей.
+    """
+    # Если это баланс или общая рассылка — берем всех из БД
+    if alert_type in ["balance", "all"]:
+        async with AsyncSessionLocal() as session:
             stmt = select(TelegramUser.telegram_id)
-        else:
-            # Только админы
-            stmt = select(TelegramUser.telegram_id).where(TelegramUser.role == 'admin')
-        
-        result = await session.execute(stmt)
-        return list(result.scalars().all())
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+    
+    # Во всех остальных случаях (технические алерты, ошибки) — только ТЫ
+    return [MY_TECH_ADMIN_ID]
 
 async def send_system_alert(message_text: str, alert_type: str = "admin_only"):
     """
-    Отправляет системное уведомление (ошибки, баланс, анонсы).
+    Отправляет системное уведомление.
+    Если alert_type='balance' — всем. Иначе — только тебе.
     """
     recipients = await _get_recipients(alert_type)
     if not recipients:
@@ -42,7 +47,7 @@ async def send_system_alert(message_text: str, alert_type: str = "admin_only"):
             try:
                 await bot.send_message(chat_id=chat_id, text=message_text)
             except Exception as e:
-                logger.warning(f"Ошибка отправки алерта в {chat_id}: {e}")
+                logger.warning(f"Ошибка отправки системного алерта в {chat_id}: {e}")
 
 async def send_verification_alert(
     dialogue_id: int,
@@ -53,11 +58,8 @@ async def send_verification_alert(
     reasoning: str = "не указано"
 ):
     """
-    Алерт о несовпадении анкетных данных (например, возраст или гражданство).
+    Технический алерт: только тебе (MY_TECH_ADMIN_ID).
     """
-    # Используем твой ID как основной для инцидентов или шлем всем админам
-    admin_id = 1975808643 
-    
     alert_text = (
         f"🚨 *INCIDENT: Ошибка верификации данных*\n\n"
         f"Диалог ID: `{dialogue_id}`\n"
@@ -65,7 +67,7 @@ async def send_verification_alert(
         f"📉 *Данные в БД:* {esc(db_data)}\n"
         f"🤖 *Deep Check LLM:* {esc(llm_data)}\n\n"
         f"🧐 *Обоснование:* _{esc(reasoning)}_\n\n"
-        f"⛔ *Данные в БД НЕ! обновлены на основе Deep Check.*"
+        f"⛔ *Данные в БД НЕ! обновлены.*"
     )
 
     async with Bot(
@@ -73,14 +75,10 @@ async def send_verification_alert(
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
     ) as bot:
         try:
-            await bot.send_message(chat_id=admin_id, text=alert_text)
-            
+            await bot.send_message(chat_id=MY_TECH_ADMIN_ID, text=alert_text)
             if history_text:
-                file = BufferedInputFile(
-                    history_text.encode('utf-8'), 
-                    filename=f"verify_error_{external_chat_id}.txt"
-                )
-                await bot.send_document(chat_id=admin_id, document=file, caption="📜 История для анализа")
+                file = BufferedInputFile(history_text.encode('utf-8'), filename=f"verify_err_{external_chat_id}.txt")
+                await bot.send_document(chat_id=MY_TECH_ADMIN_ID, document=file, caption="📜 История")
         except Exception as e:
             logger.error(f"Ошибка отправки алерта верификации: {e}")
 
@@ -94,19 +92,16 @@ async def send_hallucination_alert(
     reasoning: str = "не указано"
 ):
     """
-    Алерт о галлюцинации или ошибке извлечения (даты, телефоны и т.д.).
+    Технический алерт: только тебе (MY_TECH_ADMIN_ID).
     """
-    admin_id = 1975808643
-
     alert_text = (
         f"📅 *INCIDENT: Ошибка извлечения (Галлюцинация)*\n\n"
         f"Диалог ID: `{dialogue_id}`\n"
         f"Avito Chat: `{esc(external_chat_id)}`\n\n"
         f"👤 *Кандидат:* _{esc(user_said)}_\n"
         f"🤖 *LLM:* `{esc(llm_suggested)}`\n"
-        f"✅ *Аудитор исправил:* `{esc(corrected_val)}`\n\n"
-        f"🧐 *Обоснование:* _{esc(reasoning)}_\n\n"
-        f"🔄 *Диалог отправлен на перегенерацию.*"
+        f"✅ *Исправлено:* `{esc(corrected_val)}`\n\n"
+        f"🧐 *Обоснование:* _{esc(reasoning)}_"
     )
 
     async with Bot(
@@ -114,13 +109,9 @@ async def send_hallucination_alert(
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
     ) as bot:
         try:
-            await bot.send_message(chat_id=admin_id, text=alert_text)
-            
+            await bot.send_message(chat_id=MY_TECH_ADMIN_ID, text=alert_text)
             if history_text:
-                file = BufferedInputFile(
-                    history_text.encode('utf-8'), 
-                    filename=f"hallucination_{external_chat_id}.txt"
-                )
-                await bot.send_document(chat_id=admin_id, document=file, caption="📜 История диалога")
+                file = BufferedInputFile(history_text.encode('utf-8'), filename=f"hallucination_{external_chat_id}.txt")
+                await bot.send_document(chat_id=MY_TECH_ADMIN_ID, document=file, caption="📜 История")
         except Exception as e:
             logger.error(f"Ошибка отправки алерта галлюцинации: {e}")
