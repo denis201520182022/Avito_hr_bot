@@ -1214,7 +1214,7 @@ class Engine:
                                 f"[SYSTEM COMMAND] В прошлом шаге ты ошибся и предложил дату {interview_date}. "
                                 f"На самом деле пользователь выбрал {v_weekday} ({verified_date}) согласно календарю. "
                                 f"Сгенерируй ответ заново, подтвердив ПРАВИЛЬНУЮ дату ({v_weekday}, {verified_date}). "
-                                f"ОБЯЗАТЕЛЬНО обнови поле 'interview_date' в JSON на '{verified_date}'."
+                                f"ОБЯЗАТЕЛЬНО обнови поле 'interview_date' в JSON на '{verified_date}'. Если запись на этот день недоступна, то предложи выбрать другой день."
                             )
                             
                             sys_msg = {
