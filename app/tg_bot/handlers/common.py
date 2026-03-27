@@ -45,7 +45,7 @@ router = Router()
 
 # Состояния для FSM (экспорт Excel)
 class ExportStates(StatesGroup):
-    waiting_for_range = State()
+    waiting_for_range = State() 
 
 
 
