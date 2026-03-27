@@ -64,7 +64,7 @@ class GoogleSheetsService:
     async def _get_all_calendar_rows(self) -> List[List[str]]:
         try:
             service = await asyncio.to_thread(self._get_service)
-            range_name = f"'{self.calendar_sheet}'!A2:D500"
+            range_name = f"'{self.calendar_sheet}'!A2:D"
             result = await self._execute_google_call(
                 service.spreadsheets().values().get,
                 spreadsheetId=self._spreadsheet_id, range=range_name
