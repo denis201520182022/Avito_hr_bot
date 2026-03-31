@@ -59,15 +59,18 @@ class Scheduler:
                 async with AsyncSessionLocal() as db:
                     now_utc = datetime.datetime.now(datetime.timezone.utc)
                 
-                    # 1. МЕНЯЕМ УСЛОВИЕ: берем и тех, у кого уровень < max, и тех, кто на последнем уровне
+                    # 1. МЕНЯЕМ ЗАПРОС: добавляем .vacancy в selectinload
                     stmt = (
                         select(Dialogue)
                         .join(JobContext)
-                        .options(selectinload(Dialogue.candidate))
+                        .options(
+                            selectinload(Dialogue.candidate),
+                            selectinload(Dialogue.vacancy)  # <--- ДОБАВИТЬ ЭТУ СТРОКУ
+                        )
                         .where(
                             and_(
                                 Dialogue.status == 'in_progress',
-                                Dialogue.reminder_level <= max_levels, # <--- Берем тех, кто на последнем уровне тоже
+                                Dialogue.reminder_level <= max_levels,
                                 JobContext.is_active == True
                             )
                         )
