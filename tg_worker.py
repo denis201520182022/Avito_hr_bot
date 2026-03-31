@@ -139,6 +139,7 @@ async def send_tg_notification(dialogue: Dialogue, candidate: Candidate, vacancy
         f"📍 <b>Город:</b> {esc(profile.get('city', 'Не указан'))}\n\n"
         f"👤 <b>ФИО:</b> {esc(candidate.full_name)}\n"
         f"📞 <b>Телефон:</b> <code>{esc(candidate.phone_number)}</code>\n"
+        f"📅 <b>Дата рождения:</b> {esc(profile.get('birth_date'))}\n"
         f"🎂 <b>Возраст:</b> {esc(profile.get('age'))}\n"
         f"🌍 <b>Гражданство:</b> {esc(profile.get('citizenship'))}\n"
         f"📜 <b>Патент:</b> {esc(profile.get('has_patent'))}\n\n"

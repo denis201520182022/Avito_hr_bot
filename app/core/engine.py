@@ -76,6 +76,16 @@ class Engine:
             if not content_str.startswith('[SYSTEM') and not content_str.startswith('[Системное сообщение]'):
                 lines.append(f"{role}: {content}")
         return "\n".join(lines)
+
+    def _calculate_age(self, birth_date_str: str) -> Optional[int]:
+        """Вычисляет количество полных лет на основе даты рождения YYYY-MM-DD."""
+        try:
+            birth_date = datetime.datetime.strptime(birth_date_str, "%Y-%m-%d").date()
+            today = datetime.date.today()
+            age = today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
+            return age
+        except (ValueError, TypeError):
+            return None
     
     def _is_technical_message(self, content: Any) -> bool:
         """Определяет, является ли сообщение системным/техническим мусором."""
@@ -1394,25 +1404,23 @@ class Engine:
 
                 
 
-                # --- 13.1 ОБРАБОТКА ВОЗРАСТА ---
-                raw_age = extracted_data.get("age")
-                if raw_age:
-                    # Разрешенные стейты (как в HH)
+                # --- 13.1 ОБРАБОТКА ДАТЫ РОЖДЕНИЯ ---
+                raw_birth_date = extracted_data.get("birth_date")
+                if raw_birth_date:
                     allowed_age_states = ['awaiting_age', 'clarifying_anything']
                     
                     if current_state_at_update in allowed_age_states:
-                        if current_state_at_update == 'clarifying_anything' and profile.get("age"):
-                            ctx_logger.debug(f"Защита: поле age уже заполнено, пропускаем в стейте {current_state_at_update}")
+                        if current_state_at_update == 'clarifying_anything' and profile.get("birth_date"):
+                            ctx_logger.debug(f"Защита: поле birth_date уже заполнено, пропускаем")
                         else:
-                            current_user_text = combined_masked_message.lower()
-                            if self._validate_age_in_text(current_user_text, raw_age):
-                                profile["age"] = int(raw_age)
+                            calculated_age = self._calculate_age(raw_birth_date)
+                            if calculated_age is not None:
+                                profile["birth_date"] = raw_birth_date
+                                profile["age"] = calculated_age # Для фильтра 30-55
                                 changed = True
-                                ctx_logger.info(f"✅ Возраст {raw_age} верифицирован и записан.")
+                                ctx_logger.info(f"✅ Дата рождения {raw_birth_date} принята. Возраст: {calculated_age}")
                             else:
-                                ctx_logger.warning(f"⚠️ LLM придумала возраст {raw_age}, но в тексте его нет. Пропуск.")
-                    else:
-                        ctx_logger.debug(f"Игнорируем возраст {raw_age}: стейт {current_state_at_update} не разрешает.")
+                                ctx_logger.warning(f"⚠️ Некорректный формат даты от LLM: {raw_birth_date}")
 
                 # --- 13.2 ОБРАБОТКА ГРАЖДАНСТВА (Специфика Avito: Только РФ vs Остальные) ---
                 raw_citizenship = extracted_data.get("citizenship")
@@ -1598,8 +1606,8 @@ class Engine:
                 
                 if not dialogue.candidate.phone_number: 
                     missing_data_map["phone"] = "Номер телефона"
-                if not profile.get("age"): 
-                    missing_data_map["age"] = "Возраст собеседника (числом)"
+                if not profile.get("birth_date"): 
+                    missing_data_map["birth_date"] = "Полная дата рождения (день, месяц, год)"
                 if not profile.get("citizenship"): 
                     missing_data_map["citizenship"] = "Гражданство собеседника(страна)"
                 if not profile.get("experience"): 
@@ -1675,6 +1683,13 @@ class Engine:
                                     if key == "phone":
                                         dialogue.candidate.phone_number = str(val)
                                         ctx_logger.info(f"✨ Recovery спас телефон: {val}")
+                                    elif key == "birth_date":
+                                        calculated_age = self._calculate_age(str(val))
+                                        if calculated_age is not None: # БЫЛО: if calculated_age
+                                            profile["birth_date"] = str(val)
+                                            profile["age"] = calculated_age
+                                            is_profile_updated = True
+                                            ctx_logger.info(f"✨ Recovery спас дату рождения: {val}")
                                     else:
                                         profile[key] = val
                                         ctx_logger.info(f"✨ Recovery спас поле {key}: {val}")
@@ -1740,19 +1755,20 @@ class Engine:
                     1. Если Россия (РФ, Российская федерация) -> в "citizenship" верни "РФ".
                     2. Если любая другая страна -> в "citizenship" верни название страны.
 
-                    Правило возраста:
-                    1. в "age" верни точный возраст который указал собеседник на данный момент
+                    Правило даты рождения:
+                    1. в "birth_date" верни ПОЛНУЮ дату рождения в формате YYYY-MM-DD. 
+                       Если кандидат назвал только возраст, верни null.
 
                     ПРАВИЛА СУДИМОСТИ:
-                    1. В "criminal_record" верни "чисто" — если нет судимости или она экономическая.
+                    1. В "criminal_record" верни "нет" — если нет судимости или она экономическая.
                     2. В "criminal_record" верни "violent" — если преступление против личности (убийство, насилие, разбой, тяжкие телесные)
 
                     Верни ответ ТОЛЬКО в формате JSON:
                     {
-                        "age": <целое число или null>,
+                        "birth_date": "YYYY-MM-DD или null",
                         "citizenship": "<строка>",
                         "has_patent": "<да/нет/none>",
-                        "criminal_record": "<чисто / против личности>",
+                        "criminal_record": "<нет / против личности>",
                         "reasoning": "<твое краткое обоснование>"
                     }
                     """
@@ -1773,35 +1789,35 @@ class Engine:
                         await self._log_llm_usage(db, dialogue, "Final_Audit", verify_response.get("usage_stats"), model_name="gpt-4o")
                         
                         v_data = verify_response.get('parsed_response', {})
-                        v_age = v_data.get('age')
+                        v_birth_date = v_data.get('birth_date')
                         v_cit = v_data.get('citizenship')
                         v_patent = v_data.get('has_patent')
                         v_criminal = v_data.get('criminal_record')
 
                         # Сравниваем аудит с тем, что у нас в БД
-                        db_age = profile.get("age")
+                        db_birth_date = profile.get("birth_date")
                         db_cit = profile.get("citizenship")
                         db_patent = profile.get("has_patent")
 
-                        if v_age is not None or v_cit is not None:
+                        if v_birth_date is not None or v_cit is not None:
                             # Логика сравнения
-                            is_age_ok = (db_age == v_age)
+                            is_age_ok = (db_birth_date == v_birth_date)
                             is_cit_ok = (str(db_cit).lower() == str(v_cit).lower())
                             
                         if not is_age_ok or not is_cit_ok:
-                            ctx_logger.warning(f"🚨 РАССИНХРОН АУДИТА! БД: {db_age}/{db_cit}, Аудит: {v_age}/{v_cit}")
+                            ctx_logger.warning(f"🚨 РАССИНХРОН АУДИТА! БД: {db_birth_date}/{db_cit}, Аудит: {v_birth_date}/{v_cit}")
                             # Отправляем алерт верификации
                             await mq.publish("tg_alerts", {
                                 "type": "verification",
                                 "dialogue_id": dialogue.id,
                                 "external_chat_id": dialogue.external_chat_id,
                                 "db_data": {
-                                    "age": db_age, 
+                                    "birth_date": db_birth_date, 
                                     "citizenship": db_cit, 
                                     "patent": profile.get("has_patent")
                                 },
                                 "llm_data": {
-                                    "age": v_age, 
+                                    "birth_date": v_birth_date, 
                                     "citizenship": v_cit, 
                                     "patent": v_patent
                                 },

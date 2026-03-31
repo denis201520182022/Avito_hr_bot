@@ -472,12 +472,12 @@ class AvitoConnectorService:
             # Пытаемся получить детали как вакансию
             try:
                 vac_details = await avito.get_job_details(item_id_str, account, db)
-                logger.info(f"✅ Получены детали вакансии {vac_details}")
+                logger.debug(f"✅ Получены детали вакансии {vac_details}")
             except Exception as e:
                 # Если не вакансия — идем в Core API
-                logger.info(f"ℹ️ {item_id_str} проверяем через Core API...")
+                logger.debug(f"ℹ️ {item_id_str} проверяем через Core API...")
                 vac_details = await avito.get_item_details(item_id_str, account, db)
-                logger.info(f"✅ Получены детали вакансии {vac_details}")
+                logger.debug(f"✅ Получены детали вакансии {vac_details}")
 
             # Если API что-то вернуло
             if vac_details:
