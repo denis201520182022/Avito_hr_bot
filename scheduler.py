@@ -47,29 +47,28 @@ class Scheduler:
     async def _loop_silence_reminders(self):
         """Проверка кандидатов, которые замолчали (с учетом часовых поясов и тихого часа)"""
         
-        
         while self.is_running:
             try:
-                # 1. Проверка глобального включения
                 if not settings.reminders.silence.enabled:
                     await asyncio.sleep(60)
                     continue
 
                 qt_cfg = settings.reminders.silence.quiet_time
+                max_levels = len(settings.reminders.silence.levels)
 
                 async with AsyncSessionLocal() as db:
                     now_utc = datetime.datetime.now(datetime.timezone.utc)
-                    
-                    # Загружаем диалоги + кандидатов (чтобы достать timezone из профиля)
+                
+                    # 1. МЕНЯЕМ УСЛОВИЕ: берем и тех, у кого уровень < max, и тех, кто на последнем уровне
                     stmt = (
                         select(Dialogue)
-                        .join(JobContext) # Присоединяем таблицу вакансий для фильтрации
+                        .join(JobContext)
                         .options(selectinload(Dialogue.candidate))
                         .where(
                             and_(
-                                Dialogue.status.in_(['in_progress']),
-                                Dialogue.reminder_level < len(settings.reminders.silence.levels),
-                                JobContext.is_active == True  # <--- ДОБАВЛЕНО: только активные вакансии
+                                Dialogue.status == 'in_progress',
+                                Dialogue.reminder_level <= max_levels, # <--- Берем тех, кто на последнем уровне тоже
+                                JobContext.is_active == True
                             )
                         )
                     )
@@ -77,93 +76,74 @@ class Scheduler:
                     dialogues = result.scalars().all()
 
                     for dialogue in dialogues:
-                        # 1. СБРОС И УСТАНОВКА КОНТЕКСТА ДЛЯ КОНКРЕТНОГО ДИАЛОГА
                         log_context.set({})
-                        set_log_context(
-                            dialogue_id=dialogue.id,
-                            candidate_id=dialogue.candidate_id,
-                            task="silence_reminder"
-                        )
-                        # --- А. ОПРЕДЕЛЯЕМ ЧАСОВОЙ ПОЯС КАНДИДАТА ---
+                        set_log_context(dialogue_id=dialogue.id, task="silence_reminder")
+                        
+                        # --- А. ЧАСОВОЙ ПОЯС И ТИХИЙ ЧАС ---
                         profile = dialogue.candidate.profile_data or {}
                         tz_name = profile.get("timezone", qt_cfg.default_timezone)
-                        
                         try:
                             candidate_tz = ZoneInfo(tz_name)
                         except Exception:
                             candidate_tz = ZoneInfo(qt_cfg.default_timezone)
 
-                        # --- Б. ПРОВЕРКА ТИХОГО ЧАСА ---
                         if qt_cfg.enabled:
-                            # Узнаем время в локации кандидата прямо сейчас
                             now_candidate = datetime.datetime.now(candidate_tz).time()
-                            
-                            # Парсим границы тихого часа из конфига
                             start_q = datetime.datetime.strptime(qt_cfg.start, "%H:%M").time()
                             end_q = datetime.datetime.strptime(qt_cfg.end, "%H:%M").time()
-
                             is_quiet = False
-                            # Если интервал ночной (например, с 20:30 до 09:00)
                             if start_q > end_q:
-                                if now_candidate >= start_q or now_candidate <= end_q:
-                                    is_quiet = True
-                            # Если интервал внутри одного дня (например, с 00:00 до 07:00)
+                                if now_candidate >= start_q or now_candidate <= end_q: is_quiet = True
                             else:
-                                if start_q <= now_candidate <= end_q:
-                                    is_quiet = True
+                                if start_q <= now_candidate <= end_q: is_quiet = True
                             
-                            if is_quiet:
-                                # Просто переходим к следующему диалогу, не отправляя задачу в Engine
-                                continue
+                            if is_quiet: continue
 
-                        # --- В. СТАНДАРТНАЯ ЛОГИКА ПРОВЕРКИ МОЛЧАНИЯ ---
-                        # Напоминаем только если последнее сообщение было от БОТА
+                        # --- Б. ПРОВЕРКА ВРЕМЕНИ МОЛЧАНИЯ ---
                         if not dialogue.history or dialogue.history[-1].get("role") != "assistant":
                             continue
                         
                         last_ts = dialogue.last_message_at.replace(tzinfo=datetime.timezone.utc)
                         silence_minutes = (now_utc - last_ts).total_seconds() / 60
                         
-                        reminder_cfg = None
-                        new_level = dialogue.reminder_level
+                        current_level = dialogue.reminder_level
 
-                        # Проверяем, пора ли переходить на следующий уровень
-                        next_level_idx = dialogue.reminder_level
-                        if next_level_idx < len(settings.reminders.silence.levels):
-                            next_config = settings.reminders.silence.levels[next_level_idx]
+                        # --- В. ЛОГИКА ПЕРЕКЛЮЧЕНИЯ ---
+                        
+                        # ВАРИАНТ 1: Еще есть напоминания в запасе
+                        if current_level < max_levels:
+                            reminder_cfg = settings.reminders.silence.levels[current_level]
                             
-                            if silence_minutes >= next_config.delay_minutes:
-                                reminder_cfg = next_config
-                                new_level = next_level_idx + 1
+                            if silence_minutes >= reminder_cfg.delay_minutes:
+                                new_level = current_level + 1
+                                logger.info(f"⏰ Напоминание ур.{new_level} для диалога {dialogue.id}")
+                                
+                                await mq.publish("engine_tasks", {
+                                    "dialogue_id": dialogue.id,
+                                    "trigger": "reminder",
+                                    "reminder_text": reminder_cfg.text,
+                                    "new_level": new_level,
+                                    "stop_bot": False # Мы не стопаем тут, стоп будет позже
+                                })
+                                dialogue.reminder_level = new_level
 
-                        if reminder_cfg:
-                            logger.info(f"⏰ Напоминание! Диалог {dialogue.id}, уровень {new_level}, пояс {tz_name}")
-                            
-                            # Отправляем задачу в Engine
-                            await mq.publish("engine_tasks", {
-                                "dialogue_id": dialogue.id,
-                                "trigger": "reminder",
-                                "reminder_text": reminder_cfg.text,
-                                "new_level": new_level,
-                                "stop_bot": reminder_cfg.stop_bot
-                            })
-
-                            # Обновляем уровень в БД сразу, чтобы не слать дубли в следующем цикле
-                            dialogue.reminder_level = new_level
-                            
-                            if reminder_cfg.stop_bot:
+                        # ВАРИАНТ 2: Все напоминания отправлены, ждем финальные 30 минут
+                        elif current_level == max_levels:
+                            if silence_minutes >= 30: # <--- Тот самый порог 30 минут
+                                logger.info(f"💤 Диалог {dialogue.id} официально признан молчуном (30 мин после финала)")
+                                
                                 dialogue.status = 'timed_out'
-                                logger.info(f"zzz Диалог {dialogue.id} -> timed_out.")
-                                # --- ЗАМЕНА ЗДЕСЬ ---
+                                # Ставим уровень выше максимума, чтобы запрос его больше не цеплял
+                                dialogue.reminder_level = max_levels + 1 
+                                
+                                # Пишем в аналитику
                                 await log_event(
                                     db=db,
                                     dialogue=dialogue,
                                     event_type='timed_out',
-                                    event_data={"final_level": new_level, "tz": tz_name}
+                                    event_data={"reason": "final_timeout_30min", "total_reminders": max_levels}
                                 )
-                                # --------------------
 
-                    
                     await db.commit()
 
             except Exception as e:
