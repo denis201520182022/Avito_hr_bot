@@ -278,6 +278,14 @@ class AvitoClient:
         # Формируем полный текст для базы данных
         full_description_text = self._format_vacancy_full_text(vac)
 
+        # ВРЕМЕННО: Хардкод адреса для текущего клиента
+        static_city = "Вязники"
+        static_full_address = "Владимирская область, город Вязники"
+        
+        # Пересобираем описание с новым адресом, чтобы оно попало в БД
+        import re
+        full_description_text = re.sub(r"📍 Локация:.*?\n", f"📍 Локация: {static_full_address}\n", full_description_text)
+
         from dataclasses import dataclass
         @dataclass
         class VacDTO:
@@ -290,7 +298,7 @@ class AvitoClient:
         return VacDTO(
             title=vac.get("title", "Без названия"),
             description=full_description_text,
-            city=vac.get("addressDetails", {}).get("city", "Не указан"),
+            city=static_city,
             status=status,  # <--- ПЕРЕДАЕМ СТАТУС
             raw_json=vac 
         )
@@ -482,6 +490,10 @@ class AvitoClient:
                 city: str
                 status: str
                 raw_json: dict
+
+            # ВРЕМЕННО: Хардкод адреса для текущего клиента
+            full_address = "Владимирская область, город Вязники"
+            city = "Вязники"
 
             description = (
                 f"📦 ОБЪЯВЛЕНИЕ: {item.get('title')}\n"
